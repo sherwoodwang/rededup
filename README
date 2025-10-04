@@ -1,2 +1,0 @@
-This is a utility to create an index for a collection of files with hash functions and deduplicate another collection of
-files against the indexed one.

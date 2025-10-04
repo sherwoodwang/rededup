@@ -376,6 +376,12 @@ class ArchiveIndexNotFound(FileNotFoundError):
 
 
 class Archive:
+    """LevelDB-based file archive indexer for deduplication and content comparison.
+    
+    Creates and maintains an index of files using SHA-256 hashes and content equivalent
+    classes. Stores metadata in .aridx/database using prefixed keys for configuration,
+    file hashes, and file signatures.
+    """
     __CONFIG_PREFIX = b'c:'
     __FILE_HASH_PREFIX = b'h:'
     __FILE_SIGNATURE_PREFIX = b'm:'
@@ -385,6 +391,19 @@ class Archive:
 
     def __init__(self, processor: Processor, path: str | os.PathLike, create: bool = False,
                  output: Output | None = None):
+        """Initialize archive with LevelDB index at path/.aridx/database.
+        
+        Args:
+            processor: File processing backend for hashing and comparison
+            path: Archive root directory path
+            create: Create .aridx directory if missing
+            output: Output handler for duplicate reporting
+            
+        Raises:
+            FileNotFoundError: Archive directory does not exist
+            NotADirectoryError: Archive path is not a directory
+            ArchiveIndexNotFound: Index directory missing and create=False
+        """
         archive_path = Path(path)
 
         if output is None:
@@ -435,18 +454,22 @@ class Archive:
         self._default_hash_algorithm = 'sha256'
 
     def __del__(self):
+        """Destructor ensures database is closed."""
         self.close()
 
     def __enter__(self):
+        """Context manager entry, validates archive is still alive."""
         if not self._alive:
             raise BrokenPipeError(f"Archive was closed")
 
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit, closes database connection."""
         self.close()
 
     def close(self):
+        """Close LevelDB database and mark archive as closed."""
         if not getattr(self, '_alive', False):
             return
 
@@ -456,17 +479,29 @@ class Archive:
         self._database = None
 
     def rebuild(self):
+        """Completely rebuild index by truncating database and re-scanning all files.
+        
+        Sets hash algorithm to SHA-256, removes all existing entries, and performs
+        full archive traversal to generate new signatures and equivalent classes.
+        """
         asyncio.run(self._do_rebuild())
 
     async def _do_rebuild(self):
+        """Async implementation of rebuild operation."""
         self._truncate()
         await self._do_refresh(hash_algorithm=self._default_hash_algorithm)
         self._write_config(Archive.__CONFIG_HASH_ALGORITHM, self._default_hash_algorithm)
 
     def refresh(self):
+        """Incrementally update index by checking for file changes since last scan.
+        
+        Compares stored mtime against filesystem, removes deleted files,
+        and processes new/modified files. More efficient than rebuild.
+        """
         asyncio.run(self._do_refresh())
 
     async def _do_refresh(self, hash_algorithm: str | None = None):
+        """Async implementation of refresh operation with optional hash algorithm override."""
         async with TaskGroup() as tg:
             throttler = Throttler(tg, self._processor.concurrency * 2)
             lock_table = LockTable()
@@ -542,9 +577,19 @@ class Archive:
                     await throttler.schedule(handle_file(path, context))
 
     def find_duplicates(self, input: Path, ignore: FileMetadataDifferencePattern | None = None):
+        """Find files in input path that duplicate content in the archive.
+        
+        Args:
+            input: Directory or file path to check for duplicates
+            ignore: Metadata differences to ignore when matching (default: none)
+            
+        Outputs duplicate reports through configured Output handler.
+        Groups files by content hash and compares within equivalent classes.
+        """
         asyncio.run(self._do_find_duplicates(input, ignore=ignore))
 
     async def _do_find_duplicates(self, input: Path, ignore: FileMetadataDifferencePattern | None):
+        """Async implementation of duplicate finding with configurable metadata ignore patterns."""
         if ignore is None:
             ignore = FileMetadataDifferencePattern()
 
@@ -801,6 +846,12 @@ class Archive:
                         path.name, context.stat.st_size, True, [], [], []))
 
     def inspect(self) -> Iterator[str]:
+        """Generate human-readable index entries for debugging and inspection.
+        
+        Yields:
+            Formatted strings showing config, file-hash, and file-metadata entries
+            with hex digests, timestamps, and URL-encoded paths
+        """
         hash_algorithm = self._read_config(Archive.__CONFIG_HASH_ALGORITHM)
         if hash_algorithm in self._hash_algorithms:
             hash_length, _ = self._hash_algorithms[hash_algorithm]
@@ -837,6 +888,7 @@ class Archive:
                 yield f'OTHER {key} {value}'
 
     def _truncate(self):
+        """Clear all file hash and signature entries, reset configuration."""
         self._write_config(Archive.__CONFIG_PENDING_ACTION, 'truncate')
         self._write_config(Archive.__CONFIG_HASH_ALGORITHM, None)
 
@@ -853,12 +905,14 @@ class Archive:
         self._write_config(Archive.__CONFIG_PENDING_ACTION, None)
 
     def _write_config(self, entry: str, value: str | None) -> None:
+        """Write or delete configuration entry. None value deletes the key."""
         if value is None:
             self._config_database.delete(entry.encode())
         else:
             self._config_database.put(entry.encode(), value.encode())
 
     def _read_config(self, entry: str) -> str | None:
+        """Read configuration value from c: prefixed database entry."""
         value = self._config_database.get(entry.encode())
 
         if value is not None:
@@ -867,15 +921,30 @@ class Archive:
         return value
 
     def _register_file(self, path, signature: FileSignature) -> None:
+        """Store file signature in m: prefixed database entry.
+        
+        Args:
+            path: Relative path from archive root
+            signature: File metadata including digest, mtime_ns, and ec_id
+        """
         self._file_signature_database.put(
             b'\0'.join((str(part).encode() for part in path.parts)),
             msgpack.dumps([signature.digest, signature.mtime_ns, signature.ec_id])
         )
 
     def _deregister_file(self, path):
+        """Remove file signature entry from database."""
         self._file_signature_database.delete(b'\0'.join((str(part).encode() for part in path.parts)))
 
     def _lookup_file(self, path) -> FileSignature | None:
+        """Retrieve stored file signature by path.
+        
+        Args:
+            path: Relative path from archive root
+            
+        Returns:
+            FileSignature if found, None otherwise
+        """
         value = self._file_signature_database.get(b'\0'.join((str(part).encode() for part in path.parts)))
 
         if value is None:
@@ -884,6 +953,7 @@ class Archive:
         return FileSignature(*msgpack.loads(value))
 
     def _list_registered_files(self) -> Iterator[tuple[Path, FileSignature]]:
+        """Iterate all file signature entries, yielding (path, signature) pairs."""
         for key, value in self._file_signature_database.iterator():
             path = Path(*[part.decode() for part in key.split(b'\0')])
             signature = FileSignature(*msgpack.loads(value))
@@ -921,12 +991,14 @@ class Archive:
             yield ec_id, [Path(*parts) for parts in data]
 
     def _walk_archive(self) -> Iterator[tuple[Path, FileContext]]:
+        """Traverse archive directory excluding .aridx, yielding (path, context) pairs."""
         context = FileContext(None, None, self._archive_path.stat())
         context.exclude('.aridx')
         yield from self.__walk_recursively(self._archive_path, context)
         context.complete()
 
     def _walk(self, path: Path) -> Iterator[tuple[Path, FileContext]]:
+        """Traverse arbitrary path, yielding (path, context) pairs for duplicate detection."""
         st = path.stat(follow_symlinks=False)
         pseudo_parent = FileContext(None, None, st)
         context = FileContext(pseudo_parent, path.name, st)
@@ -936,6 +1008,7 @@ class Archive:
         pseudo_parent.complete()
 
     def __walk_recursively(self, path: Path, parent: FileContext) -> Iterator[tuple[Path, FileContext]]:
+        """Recursively traverse directory, respecting exclusion patterns."""
         child: Path
         for child in path.iterdir():
             if parent.is_excluded(child.name):
