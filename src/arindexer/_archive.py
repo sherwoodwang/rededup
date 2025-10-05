@@ -5,7 +5,7 @@ import os
 import stat
 import threading
 import urllib.parse
-from asyncio import TaskGroup, Semaphore, Lock, Condition, Future
+from asyncio import TaskGroup, Semaphore, Future
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -15,6 +15,7 @@ import msgpack
 import plyvel
 
 from ._processor import Processor, FileMetadataDifference, FileMetadataDifferenceType
+from ._keyed_lock import KeyedLock
 
 
 class Throttler:
@@ -57,40 +58,6 @@ class Throttler:
                 self.release()
                 self.release = lambda: None
                 self.released = True
-
-
-class LockTable:
-    class _Lock:
-        def __init__(self, parent, entry):
-            self._parent: LockTable = parent
-            self._entry = entry
-
-        async def __aenter__(self):
-            async with self._parent._lock:
-                if self._entry in self._parent._entries:
-                    self._parent._entries[self._entry].append(self)
-                else:
-                    self._parent._entries[self._entry] = [self]
-
-                while self._parent._entries[self._entry][0] is not self:
-                    await self._parent._entry_releasing.wait()
-
-        async def __aexit__(self, exc_type, exc_val, exc_tb):
-            async with self._parent._lock:
-                backlog = self._parent._entries[self._entry]
-                if len(backlog) > 1:
-                    self._parent._entries[self._entry] = backlog[1:]
-                    self._parent._entry_releasing.notify_all()
-                else:
-                    del self._parent._entries[self._entry]
-
-    def __init__(self):
-        self._lock = Lock()
-        self._entry_releasing = Condition(self._lock)
-        self._entries = dict()
-
-    def lock(self, entry):
-        return LockTable._Lock(self, entry)
 
 
 class FileMetadataDifferencePattern:
@@ -238,7 +205,7 @@ class FileContext:
         self.exclusion: set[str] = set()
 
         self._completed = False
-        self._message_gatherer: dict[any, MessageGatherer] = {}
+        self._message_gatherer: dict[Any, MessageGatherer] = {}
 
     @property
     def parent(self) -> 'FileContext':
@@ -504,7 +471,7 @@ class Archive:
         """Async implementation of refresh operation with optional hash algorithm override."""
         async with TaskGroup() as tg:
             throttler = Throttler(tg, self._processor.concurrency * 2)
-            lock_table = LockTable()
+            keyed_lock = KeyedLock()
 
             if hash_algorithm is None:
                 hash_algorithm = self._read_config(Archive.__CONFIG_HASH_ALGORITHM)
@@ -520,6 +487,7 @@ class Archive:
             async def handle_file(path: Path, context: FileContext):
                 if self._lookup_file(context.relative_path()) is None:
                     return await generate_signature(path, context.relative_path(), context.stat.st_mtime_ns)
+                return None
 
             async def refresh_entry(relative_path: Path, signature: FileSignature):
                 path = (self._archive_path / relative_path)
@@ -527,7 +495,7 @@ class Archive:
                 async def clean_up():
                     self._register_file(relative_path, FileSignature(signature.digest, signature.mtime_ns, None))
 
-                    async with lock_table.lock(signature.digest):
+                    async with keyed_lock.lock(signature.digest):
                         for ec_id, paths in self._list_content_equivalent_classes(signature.digest):
                             if relative_path in paths:
                                 paths.remove(relative_path)
@@ -552,7 +520,7 @@ class Archive:
             async def generate_signature(path: Path, relative_path: Path, mtime: int):
                 digest = await calculate_digest(path)
 
-                async with lock_table.lock(digest):
+                async with keyed_lock.lock(digest):
                     next_ec_id = 0
                     for ec_id, paths in self._list_content_equivalent_classes(digest):
                         if next_ec_id <= ec_id:
