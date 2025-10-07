@@ -7,7 +7,7 @@ from asyncio import TaskGroup, Future
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Awaitable, TypeAlias
+from typing import Any, Callable, Awaitable, TypeAlias, NamedTuple
 
 from ._processor import Processor, FileMetadataDifference, FileMetadataDifferenceType
 from ._throttler import Throttler
@@ -204,28 +204,33 @@ class MessageGatherer:
         self._task_group.create_task(trigger())
 
 
+class FindDuplicatesArgs(NamedTuple):
+    """Arguments for duplicate finding operations."""
+    processor: Processor  # File processing backend for content comparison and metadata analysis
+    output: Output  # Output handler for reporting duplicate findings
+    hash_algorithms: dict  # Available hash algorithms mapping name to (digest_size, calculator)
+    default_hash_algorithm: str  # Default hash algorithm name to use for digest calculation
+    config_hash_algorithm_key: str  # Configuration key for retrieving stored hash algorithm
+    input: Path  # Directory or file path to search for duplicates
+    ignore: FileMetadataDifferencePattern  # Metadata differences to ignore when matching
+
+
 async def do_find_duplicates(
         store: ArchiveStore,
-        processor: Processor,
-        output: Output,
-        archive_path: Path,
-        hash_algorithms: dict,
-        default_hash_algorithm: str,
-        config_hash_algorithm_key: str,
-        input: Path,
-        ignore: FileMetadataDifferencePattern):
+        args: FindDuplicatesArgs):
     """Async implementation of duplicate finding with configurable metadata ignore patterns."""
-    hash_algorithm = store.read_config(config_hash_algorithm_key)
+    archive_path = store.archive_path
+    hash_algorithm = store.read_config(args.config_hash_algorithm_key)
 
     if hash_algorithm is None:
         raise RuntimeError("The index hasn't been build")
 
-    if hash_algorithm not in hash_algorithms:
+    if hash_algorithm not in args.hash_algorithms:
         raise RuntimeError(f"Unknown hash algorithm: {hash_algorithm}")
 
     async with (TaskGroup() as tg):
-        throttler = Throttler(tg, processor.concurrency * 2)
-        _, calculate_digest = hash_algorithms[default_hash_algorithm]
+        throttler = Throttler(tg, args.processor.concurrency * 2)
+        _, calculate_digest = args.hash_algorithms[args.default_hash_algorithm]
 
         @dataclass
         class DiscoveredDuplicate:
@@ -251,7 +256,7 @@ async def do_find_duplicates(
 
             # Find an equivalent class where the contents of files match the file at 'path'.
             for ec_id, paths in store.list_content_equivalent_classes(digest):
-                if await processor.compare_content(archive_path / paths[0], path):
+                if await args.processor.compare_content(archive_path / paths[0], path):
                     # Only one match will suffice as all files in an equivalent class share the same content
                     break
             else:
@@ -263,8 +268,8 @@ async def do_find_duplicates(
             content_wise_duplicates = []
             # Find a file in the equivalent class which matches the file at 'path' with regard to their metadata
             for candidate in paths:
-                diffs = await processor.compare_metadata(archive_path / candidate, path)
-                major_diffs = [diff for diff in diffs if not ignore.match(diff)]
+                diffs = await args.processor.compare_metadata(archive_path / candidate, path)
+                major_diffs = [diff for diff in diffs if not args.ignore.match(diff)]
                 duplicate = DiscoveredDuplicate(candidate, major_diffs, diffs)
                 if not major_diffs:
                     duplicates.append(duplicate)
@@ -289,10 +294,10 @@ async def do_find_duplicates(
 
             if not inhibit_file_report:
                 if duplicates:
-                    output.describe_duplicate(
+                    args.output.describe_duplicate(
                         path, False, [(d.path_in_archive, d.minor_diffs) for d in duplicates])
                 else:
-                    output.describe_content_wise_duplicate(
+                    args.output.describe_content_wise_duplicate(
                         path, False,
                         [(d.path_in_archive, d.major_diffs, d.minor_diffs) for d in content_wise_duplicates])
 
@@ -433,10 +438,10 @@ async def do_find_duplicates(
 
                 if not directory_result.inhibit_file_report:
                     if duplicates:
-                        output.describe_duplicate(
+                        args.output.describe_duplicate(
                             path, True, [(d.path_in_archive, d.minor_diffs) for d in duplicates])
                     elif content_wise_duplicates:
-                        output.describe_content_wise_duplicate(
+                        args.output.describe_content_wise_duplicate(
                             path, True,
                             [(d.path_in_archive, d.major_diffs, d.minor_diffs) for d in content_wise_duplicates])
 
@@ -454,7 +459,7 @@ async def do_find_duplicates(
         def make_default_directory_result():
             return DiscardedMessage(DirectoryResult(inhibit_file_report=False))
 
-        for path, context in store.walk(input):
+        for path, context in store.walk(args.input):
             # Inline send_message logic using the key directly in the dictionary
             try:
                 message_gatherer = context.parent[handle_directory_entries]

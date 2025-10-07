@@ -7,11 +7,12 @@ from ._processor import Processor
 from ._archive_store import ArchiveStore
 from ._duplicate_finder import (
     do_find_duplicates,
+    FindDuplicatesArgs,
     FileMetadataDifferencePattern,
     Output,
     StandardOutput
 )
-from ._rebuild_refresh import do_rebuild, do_refresh
+from ._rebuild_refresh import do_rebuild, do_refresh, RebuildRefreshArgs
 
 
 class Archive:
@@ -88,11 +89,12 @@ class Archive:
         """
         asyncio.run(do_rebuild(
             self._store,
-            self._processor,
-            self._store.archive_path,
-            self._hash_algorithms,
-            self._default_hash_algorithm,
-            Archive.__CONFIG_HASH_ALGORITHM
+            RebuildRefreshArgs(
+                self._processor,
+                self._hash_algorithms,
+                self._default_hash_algorithm,
+                Archive.__CONFIG_HASH_ALGORITHM
+            )
         ))
 
     def refresh(self):
@@ -103,10 +105,12 @@ class Archive:
         """
         asyncio.run(do_refresh(
             self._store,
-            self._processor,
-            self._store.archive_path,
-            self._hash_algorithms,
-            Archive.__CONFIG_HASH_ALGORITHM
+            RebuildRefreshArgs(
+                self._processor,
+                self._hash_algorithms,
+                self._default_hash_algorithm,
+                Archive.__CONFIG_HASH_ALGORITHM
+            )
         ))
 
     def find_duplicates(self, input: Path, ignore: FileMetadataDifferencePattern | None = None):
@@ -124,14 +128,15 @@ class Archive:
 
         asyncio.run(do_find_duplicates(
             self._store,
-            self._processor,
-            self._output,
-            self._store.archive_path,
-            self._hash_algorithms,
-            self._default_hash_algorithm,
-            Archive.__CONFIG_HASH_ALGORITHM,
-            input,
-            ignore
+            FindDuplicatesArgs(
+                self._processor,
+                self._output,
+                self._hash_algorithms,
+                self._default_hash_algorithm,
+                Archive.__CONFIG_HASH_ALGORITHM,
+                input,
+                ignore
+            )
         ))
 
     def inspect(self) -> Iterator[str]:

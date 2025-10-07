@@ -1,5 +1,6 @@
 from asyncio import TaskGroup
 from pathlib import Path
+from typing import NamedTuple
 
 from ._keyed_lock import KeyedLock
 from ._walker import FileContext
@@ -8,48 +9,46 @@ from ._archive_store import ArchiveStore, FileSignature
 from ._processor import Processor
 
 
-async def do_rebuild(
-        store: ArchiveStore,
-        processor: Processor,
-        archive_path: Path,
-        hash_algorithms: dict,
-        default_hash_algorithm: str,
-        config_hash_algorithm_key: str):
+class RebuildRefreshArgs(NamedTuple):
+    """Arguments for rebuild and refresh operations."""
+    processor: Processor  # File processing backend for hashing and comparison
+    hash_algorithms: dict  # Available hash algorithms mapping name to (digest_size, calculator)
+    default_hash_algorithm: str  # Default hash algorithm name to use
+    config_hash_algorithm_key: str  # Configuration key for storing hash algorithm choice
+
+
+async def do_rebuild(store: ArchiveStore, args: RebuildRefreshArgs):
     """Async implementation of rebuild operation."""
     store.truncate()
     await do_refresh(
         store,
-        processor,
-        archive_path,
-        hash_algorithms,
-        config_hash_algorithm_key,
-        hash_algorithm=default_hash_algorithm
+        args,
+        hash_algorithm=args.default_hash_algorithm
     )
-    store.write_config(config_hash_algorithm_key, default_hash_algorithm)
+    store.write_config(args.config_hash_algorithm_key, args.default_hash_algorithm)
 
 
 async def do_refresh(
         store: ArchiveStore,
-        processor: Processor,
-        archive_path: Path,
-        hash_algorithms: dict,
-        config_hash_algorithm_key: str,
+        args: RebuildRefreshArgs,
         hash_algorithm: str | None = None):
     """Async implementation of refresh operation with optional hash algorithm override."""
+    archive_path = store.archive_path
+
     async with TaskGroup() as tg:
-        throttler = Throttler(tg, processor.concurrency * 2)
+        throttler = Throttler(tg, args.processor.concurrency * 2)
         keyed_lock = KeyedLock()
 
         if hash_algorithm is None:
-            hash_algorithm = store.read_config(config_hash_algorithm_key)
+            hash_algorithm = store.read_config(args.config_hash_algorithm_key)
 
             if hash_algorithm is None:
                 raise RuntimeError("The index hasn't been build")
 
-            if hash_algorithm not in hash_algorithms:
+            if hash_algorithm not in args.hash_algorithms:
                 raise RuntimeError(f"Unknown hash algorithm: {hash_algorithm}")
 
-        _, calculate_digest = hash_algorithms[hash_algorithm]
+        _, calculate_digest = args.hash_algorithms[hash_algorithm]
 
         async def handle_file(path: Path, context: FileContext):
             if store.lookup_file(context.relative_path()) is None:
@@ -93,7 +92,7 @@ async def do_refresh(
                     if next_ec_id <= ec_id:
                         next_ec_id = ec_id + 1
 
-                    if await processor.compare_content(path, archive_path / paths[0]):
+                    if await args.processor.compare_content(path, archive_path / paths[0]):
                         paths.append(relative_path)
                         break
                 else:
