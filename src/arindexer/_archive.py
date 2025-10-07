@@ -16,6 +16,7 @@ import plyvel
 
 from ._processor import Processor, FileMetadataDifference, FileMetadataDifferenceType
 from ._keyed_lock import KeyedLock
+from ._file_context import FileContext, walk_recursively
 
 
 class Throttler:
@@ -195,87 +196,6 @@ class MessageGatherer:
                 reply(None)
 
         self._task_group.create_task(trigger())
-
-
-class FileContext:
-    def __init__(self, parent, name: str | None, st: os.stat_result):
-        self._parent: FileContext | None = parent
-        self.name: str = name
-        self.stat: os.stat_result = st
-        self.exclusion: set[str] = set()
-
-        self._completed = False
-        self._message_gatherer: dict[Any, MessageGatherer] = {}
-
-    @property
-    def parent(self) -> 'FileContext':
-        if self._parent is None:
-            raise LookupError("no parent")
-
-        return self._parent
-
-    def exclude(self, filename):
-        self.exclusion.add(filename)
-
-    def is_excluded(self, filename):
-        return filename in self.exclusion
-
-    def relative_path(self) -> Path:
-        path = None
-
-        context = self
-        while context is not None:
-            if context.name is not None:
-                if path is None:
-                    path = Path(context.name)
-                else:
-                    path = Path(context.name) / path
-
-            context = context._parent
-
-        return path
-
-    def complete(self):
-        for message_gatherer in self._message_gatherer.values():
-            message_gatherer.complete()
-
-        self._completed = True
-
-    def is_file(self):
-        return stat.S_ISREG(self.stat.st_mode)
-
-    def send_message(self, key: Any, fallback: Callable[[], Message] | None = None) -> Message:
-        """
-        Send a message to the parent file context.
-
-        This method only creates a stub at the parent file context. The actual content is delivered later with
-        Message.deliver().
-
-        :param key: the key of the message processor.
-        :param fallback: the function to be called when the message processor hasn't been registered; None produces
-        KeyError in that case.
-        :return: the message object.
-        """
-
-        try:
-            message_gatherer = self._message_gatherer[key]
-        except KeyError:
-            if fallback is None:
-                raise
-            else:
-                return fallback()
-
-        return message_gatherer.send()
-
-    def register_message_processor(
-            self, task_group: TaskGroupLike, key: Any, processor: MessageProcessor):
-        if self._completed:
-            raise RuntimeError("the file context has already completed")
-
-        if key in self._message_gatherer:
-            raise RuntimeError('the message processor has already been initialized')
-
-        self._message_gatherer[key] = MessageGatherer(task_group, processor)
 
 
 @dataclass
@@ -801,14 +721,22 @@ class Archive:
                 return DiscardedMessage(DirectoryResult(inhibit_file_report=False))
 
             for path, context in self._walk(input):
-                message_to_parent = context.parent.send_message(handle_directory_entries, make_default_directory_result)
+                # Inline send_message logic using the key directly in the dictionary
+                try:
+                    message_gatherer = context.parent[handle_directory_entries]
+                except KeyError:
+                    message_to_parent = make_default_directory_result()
+                else:
+                    message_to_parent = message_gatherer.send()
 
                 if stat.S_ISREG(context.stat.st_mode):
                     await throttler.schedule(handle_file(path, context, message_to_parent))
                 elif stat.S_ISDIR(context.stat.st_mode):
-                    context.register_message_processor(
-                        tg, handle_directory_entries,
-                        partial(handle_directory_entries, path, context, message_to_parent))
+                    # Inline register_message_processor logic
+                    if handle_directory_entries in context:
+                        raise RuntimeError('the message processor has already been initialized')
+                    context[handle_directory_entries] = MessageGatherer(
+                        tg, partial(handle_directory_entries, path, context, message_to_parent))
                 else:
                     message_to_parent.deliver_nowait(DirectoryEntryResult(
                         path.name, context.stat.st_size, True, [], [], []))
@@ -962,7 +890,7 @@ class Archive:
         """Traverse archive directory excluding .aridx, yielding (path, context) pairs."""
         context = FileContext(None, None, self._archive_path.stat())
         context.exclude('.aridx')
-        yield from self.__walk_recursively(self._archive_path, context)
+        yield from walk_recursively(self._archive_path, context)
         context.complete()
 
     def _walk(self, path: Path) -> Iterator[tuple[Path, FileContext]]:
@@ -971,22 +899,6 @@ class Archive:
         pseudo_parent = FileContext(None, None, st)
         context = FileContext(pseudo_parent, path.name, st)
         yield path, context
-        yield from self.__walk_recursively(path, context)
+        yield from walk_recursively(path, context)
         context.complete()
         pseudo_parent.complete()
-
-    def __walk_recursively(self, path: Path, parent: FileContext) -> Iterator[tuple[Path, FileContext]]:
-        """Recursively traverse directory, respecting exclusion patterns."""
-        child: Path
-        for child in path.iterdir():
-            if parent.is_excluded(child.name):
-                continue
-
-            st = child.stat(follow_symlinks=False)
-            context = FileContext(parent, child.name, st)
-            if stat.S_ISDIR(st.st_mode):
-                yield child, context
-                yield from self.__walk_recursively(child, context)
-                context.complete()
-            else:
-                yield child, context
