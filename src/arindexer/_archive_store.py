@@ -6,7 +6,7 @@ from typing import Iterator, Iterable
 import msgpack
 import plyvel
 
-from ._file_context import FileContext, walk_recursively
+from ._walker import FileContext, walk_recursively
 
 
 class FileSignature:

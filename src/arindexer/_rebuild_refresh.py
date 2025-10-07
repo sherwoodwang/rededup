@@ -2,7 +2,7 @@ from asyncio import TaskGroup
 from pathlib import Path
 
 from ._keyed_lock import KeyedLock
-from ._file_context import FileContext
+from ._walker import FileContext
 from ._throttler import Throttler
 from ._archive_store import ArchiveStore, FileSignature
 from ._processor import Processor
