@@ -1,11 +1,10 @@
 import abc
 import asyncio
-import contextvars
 import os
 import stat
 import threading
 import urllib.parse
-from asyncio import TaskGroup, Semaphore, Future
+from asyncio import TaskGroup, Future
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -17,48 +16,7 @@ import plyvel
 from ._processor import Processor, FileMetadataDifference, FileMetadataDifferenceType
 from ._keyed_lock import KeyedLock
 from ._file_context import FileContext, walk_recursively
-
-
-class Throttler:
-    def __init__(self, task_group: TaskGroup, concurrency: int):
-        self._task_group = task_group
-        self._semaphore = Semaphore(concurrency)
-
-    async def schedule(self, coro, name=None, context=None) -> asyncio.Task:
-        await self._semaphore.acquire()
-
-        async def wrapper():
-            tenure = Throttler.__Tenure(lambda: self._semaphore.release())
-            token = Throttler.__tenure.set(tenure)
-            try:
-                return await coro
-            finally:
-                Throttler.__tenure.reset(token)
-                tenure.release()
-
-        try:
-            return self._task_group.create_task(wrapper(), name=name, context=context)
-        except:
-            self._semaphore.release()
-            raise
-
-    @staticmethod
-    def terminate_current_tenure():
-        Throttler.__tenure.get().terminate()
-
-    __tenure = contextvars.ContextVar('Throttler.__tenure')
-
-    class __Tenure:
-        def __init__(self, release):
-            self.lock = threading.Lock()
-            self.released = False
-            self.release = lambda: release()
-
-        def terminate(self):
-            with self.lock:
-                self.release()
-                self.release = lambda: None
-                self.released = True
+from ._throttler import Throttler
 
 
 class FileMetadataDifferencePattern:
@@ -542,7 +500,7 @@ class Archive:
                 # content-wise duplicates in directory view
                 cw_dup_in_dir_view = [d for d in content_wise_duplicates if d.path_in_archive.name == path.name]
 
-                Throttler.terminate_current_tenure()
+                Throttler.yield_slot()
 
                 if dup_in_dir_view:
                     directory_result: DirectoryResult = await message_to_parent.deliver(DirectoryEntryResult(
