@@ -5,6 +5,7 @@ from typing import Iterator, Iterable
 
 import msgpack
 import plyvel
+from setuptools.command.egg_info import manifest_maker
 
 from ._walker import FileContext, walk_recursively
 
@@ -27,7 +28,7 @@ class ArchiveStore:
     This class represents the archive from a data operations perspective, providing
     direct access to the persistent storage layer (LevelDB). It handles:
     - Database lifecycle (open, close, context management)
-    - Configuration storage and retrieval
+    - Manifest storage and retrieval
     - File signature persistence (digest, mtime, equivalent class ID)
     - Content equivalent class management
     - File system traversal
@@ -41,12 +42,12 @@ class ArchiveStore:
     refresh(), and find_duplicates() that orchestrate multiple ArchiveStore operations
     into complete workflows with proper error handling and concurrency management.
     """
-    __CONFIG_PREFIX = b'c:'
+    __MANIFEST_PROPERTY_PREFIX = b'c:'
     __FILE_HASH_PREFIX = b'h:'
     __FILE_SIGNATURE_PREFIX = b'm:'
 
-    __CONFIG_HASH_ALGORITHM = 'hash-algorithm'
-    __CONFIG_PENDING_ACTION = 'truncating'
+    MANIFEST_HASH_ALGORITHM = 'hash-algorithm'
+    MANIFEST_PENDING_ACTION = 'truncating'
 
     def __init__(self, archive_path: Path, create: bool = False):
         """Initialize raw archive with LevelDB database.
@@ -82,7 +83,7 @@ class ArchiveStore:
         database = None
         try:
             database = plyvel.DB(str(database_path), create_if_missing=True)
-            config_database: plyvel.DB = database.prefixed_db(ArchiveStore.__CONFIG_PREFIX)
+            manifest_database: plyvel.DB = database.prefixed_db(ArchiveStore.__MANIFEST_PROPERTY_PREFIX)
             file_hash_database: plyvel.DB = database.prefixed_db(ArchiveStore.__FILE_HASH_PREFIX)
             file_signature_database: plyvel.DB = database.prefixed_db(ArchiveStore.__FILE_SIGNATURE_PREFIX)
         except:
@@ -93,7 +94,7 @@ class ArchiveStore:
         self._archive_path = archive_path
         self._alive = True
         self._database = database
-        self._config_database = config_database
+        self._manifest_database = manifest_database
         self._file_hash_database = file_hash_database
         self._file_signature_database = file_signature_database
 
@@ -128,9 +129,9 @@ class ArchiveStore:
         return self._archive_path
 
     def truncate(self):
-        """Clear all file hash and signature entries, reset configuration."""
-        self.write_config(ArchiveStore.__CONFIG_PENDING_ACTION, 'truncate')
-        self.write_config(ArchiveStore.__CONFIG_HASH_ALGORITHM, None)
+        """Clear all file hash and signature entries, reset manifest."""
+        self.write_manifest(ArchiveStore.MANIFEST_PENDING_ACTION, 'truncate')
+        self.write_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM, None)
 
         batch = self._file_signature_database.write_batch()
         for key, _ in self._file_signature_database.iterator():
@@ -142,18 +143,18 @@ class ArchiveStore:
             batch.delete(key)
         batch.write()
 
-        self.write_config(ArchiveStore.__CONFIG_PENDING_ACTION, None)
+        self.write_manifest(ArchiveStore.MANIFEST_PENDING_ACTION, None)
 
-    def write_config(self, entry: str, value: str | None) -> None:
-        """Write or delete configuration entry. None value deletes the key."""
+    def write_manifest(self, entry: str, value: str | None) -> None:
+        """Write or delete manifest property. None value deletes the key."""
         if value is None:
-            self._config_database.delete(entry.encode())
+            self._manifest_database.delete(entry.encode())
         else:
-            self._config_database.put(entry.encode(), value.encode())
+            self._manifest_database.put(entry.encode(), value.encode())
 
-    def read_config(self, entry: str) -> str | None:
-        """Read configuration value from c: prefixed database entry."""
-        value = self._config_database.get(entry.encode())
+    def read_manifest(self, entry: str) -> str | None:
+        """Read manifest property value from c: prefixed database entry."""
+        value = self._manifest_database.get(entry.encode())
 
         if value is not None:
             value = value.decode()
@@ -237,10 +238,10 @@ class ArchiveStore:
             hash_algorithms: Dictionary mapping algorithm names to (length, function) tuples
 
         Yields:
-            Formatted strings showing config, file-hash, and file-metadata entries
+            Formatted strings showing manifest-property, file-hash, and file-metadata entries
             with hex digests, timestamps, and URL-encoded paths
         """
-        hash_algorithm = self.read_config(ArchiveStore.__CONFIG_HASH_ALGORITHM)
+        hash_algorithm = self.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
         if hash_algorithm in hash_algorithms:
             hash_length, _ = hash_algorithms[hash_algorithm]
         else:
@@ -248,9 +249,9 @@ class ArchiveStore:
 
         for key, value in self._database.iterator():
             key: bytes
-            if key.startswith(ArchiveStore.__CONFIG_PREFIX):
-                entry = key[len(ArchiveStore.__CONFIG_PREFIX):].decode()
-                yield f'config {entry} {value.decode()}'
+            if key.startswith(ArchiveStore.__MANIFEST_PROPERTY_PREFIX):
+                entry = key[len(ArchiveStore.__MANIFEST_PROPERTY_PREFIX):].decode()
+                yield f'manifest-property {entry} {value.decode()}'
             elif key.startswith(ArchiveStore.__FILE_HASH_PREFIX):
                 digest_and_ec_id = key[len(ArchiveStore.__FILE_HASH_PREFIX):]
                 paths = ' '.join((
@@ -291,8 +292,3 @@ class ArchiveStore:
         yield from walk_recursively(path, context)
         context.complete()
         pseudo_parent.complete()
-
-    @property
-    def config_hash_algorithm_key(self) -> str:
-        """Get the configuration key for hash algorithm."""
-        return ArchiveStore.__CONFIG_HASH_ALGORITHM

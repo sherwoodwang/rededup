@@ -453,7 +453,7 @@ class ArchiveTest(unittest.TestCase):
 
 
 _test_common_lifecycle_0 = {
-    'config hash-algorithm sha256',
+    'manifest-property hash-algorithm sha256',
     'file-hash 012e06abd2e40aebd85e416c4c84d0409e131e7831b10fae1944972d01c03753 0 sample8/sample41',
     'file-hash 0576fefc966dc91b9860dc21a525cbbf4999330d3bd193973ca7e67624a4951b 0 sample8/sample38',
     'file-hash 11aa7f108a573d417055076df566d7aa9eebc0cdadf1a56c5a8fe863ba9c9215 0 sample8/sample26',
@@ -633,7 +633,7 @@ _test_common_lifecycle_3 = \
     }
 
 _test_rebuild_with_collision_data = {
-    'config hash-algorithm xor',
+    'manifest-property hash-algorithm xor',
     'file-hash 00010001 0 sample130',
     'file-hash 00010001 1 sample190',
     'file-hash 00010001 256 sample75',

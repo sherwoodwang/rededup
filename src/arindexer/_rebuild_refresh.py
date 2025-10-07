@@ -14,7 +14,6 @@ class RebuildRefreshArgs(NamedTuple):
     processor: Processor  # File processing backend for hashing and comparison
     hash_algorithms: dict  # Available hash algorithms mapping name to (digest_size, calculator)
     default_hash_algorithm: str  # Default hash algorithm name to use
-    config_hash_algorithm_key: str  # Configuration key for storing hash algorithm choice
 
 
 async def do_rebuild(store: ArchiveStore, args: RebuildRefreshArgs):
@@ -25,7 +24,7 @@ async def do_rebuild(store: ArchiveStore, args: RebuildRefreshArgs):
         args,
         hash_algorithm=args.default_hash_algorithm
     )
-    store.write_config(args.config_hash_algorithm_key, args.default_hash_algorithm)
+    store.write_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM, args.default_hash_algorithm)
 
 
 async def do_refresh(
@@ -40,7 +39,7 @@ async def do_refresh(
         keyed_lock = KeyedLock()
 
         if hash_algorithm is None:
-            hash_algorithm = store.read_config(args.config_hash_algorithm_key)
+            hash_algorithm = store.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
 
             if hash_algorithm is None:
                 raise RuntimeError("The index hasn't been build")

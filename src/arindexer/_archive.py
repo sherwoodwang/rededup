@@ -32,7 +32,6 @@ class Archive:
     storage access without workflow orchestration. Archive composes ArchiveStore primitives
     into meaningful, user-facing operations with proper sequencing and error handling.
     """
-    __CONFIG_HASH_ALGORITHM = 'hash-algorithm'
 
     def __init__(self, processor: Processor, path: str | os.PathLike, create: bool = False,
                  output: Output | None = None):
@@ -92,8 +91,7 @@ class Archive:
             RebuildRefreshArgs(
                 self._processor,
                 self._hash_algorithms,
-                self._default_hash_algorithm,
-                Archive.__CONFIG_HASH_ALGORITHM
+                self._default_hash_algorithm
             )
         ))
 
@@ -108,8 +106,7 @@ class Archive:
             RebuildRefreshArgs(
                 self._processor,
                 self._hash_algorithms,
-                self._default_hash_algorithm,
-                Archive.__CONFIG_HASH_ALGORITHM
+                self._default_hash_algorithm
             )
         ))
 
@@ -133,7 +130,6 @@ class Archive:
                 self._output,
                 self._hash_algorithms,
                 self._default_hash_algorithm,
-                Archive.__CONFIG_HASH_ALGORITHM,
                 input,
                 ignore
             )
@@ -143,7 +139,7 @@ class Archive:
         """Generate human-readable index entries for debugging and inspection.
 
         Yields:
-            Formatted strings showing config, file-hash, and file-metadata entries
-            with hex digests, timestamps, and URL-encoded paths
+            Formatted strings showing manifest-property, file-hash, and file-metadata
+            entries with hex digests, timestamps, and URL-encoded paths
         """
         yield from self._store.inspect(self._hash_algorithms)

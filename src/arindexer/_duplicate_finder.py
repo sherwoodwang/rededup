@@ -210,7 +210,6 @@ class FindDuplicatesArgs(NamedTuple):
     output: Output  # Output handler for reporting duplicate findings
     hash_algorithms: dict  # Available hash algorithms mapping name to (digest_size, calculator)
     default_hash_algorithm: str  # Default hash algorithm name to use for digest calculation
-    config_hash_algorithm_key: str  # Configuration key for retrieving stored hash algorithm
     input: Path  # Directory or file path to search for duplicates
     ignore: FileMetadataDifferencePattern  # Metadata differences to ignore when matching
 
@@ -220,7 +219,7 @@ async def do_find_duplicates(
         args: FindDuplicatesArgs):
     """Async implementation of duplicate finding with configurable metadata ignore patterns."""
     archive_path = store.archive_path
-    hash_algorithm = store.read_config(args.config_hash_algorithm_key)
+    hash_algorithm = store.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
 
     if hash_algorithm is None:
         raise RuntimeError("The index hasn't been build")
