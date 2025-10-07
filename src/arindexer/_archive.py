@@ -3,20 +3,17 @@ import asyncio
 import os
 import stat
 import threading
-import urllib.parse
 from asyncio import TaskGroup, Future
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Iterator, Iterable, Callable, Awaitable, TypeAlias
-
-import msgpack
-import plyvel
+from typing import Any, Iterator, Callable, Awaitable, TypeAlias
 
 from ._processor import Processor, FileMetadataDifference, FileMetadataDifferenceType
 from ._keyed_lock import KeyedLock
-from ._file_context import FileContext, walk_recursively
+from ._file_context import FileContext
 from ._throttler import Throttler
+from ._archive_store import ArchiveStore, FileSignature, ArchiveIndexNotFound
 
 
 class FileMetadataDifferencePattern:
@@ -156,13 +153,6 @@ class MessageGatherer:
         self._task_group.create_task(trigger())
 
 
-@dataclass
-class FileSignature:
-    digest: bytes
-    mtime_ns: int
-    ec_id: int | None
-
-
 class Output(metaclass=abc.ABCMeta):
     def __init__(self):
         self.verbosity = 0
@@ -216,34 +206,35 @@ class StandardOutput(Output):
             print(part)
 
 
-class ArchiveIndexNotFound(FileNotFoundError):
-    pass
-
-
 class Archive:
-    """LevelDB-based file archive indexer for deduplication and content comparison.
-    
-    Creates and maintains an index of files using SHA-256 hashes and content equivalent
-    classes. Stores metadata in .aridx/database using prefixed keys for configuration,
-    file hashes, and file signatures.
-    """
-    __CONFIG_PREFIX = b'c:'
-    __FILE_HASH_PREFIX = b'h:'
-    __FILE_SIGNATURE_PREFIX = b'm:'
+    """High-level workflow orchestration layer for archive file indexing and deduplication.
 
+    This class represents the archive from a business operations perspective, providing
+    complete workflows for common archive management tasks:
+    - rebuild(): Full index reconstruction from scratch
+    - refresh(): Incremental updates based on file system changes
+    - find_duplicates(): Content-aware duplicate detection with metadata comparison
+
+    Archive operates at the workflow level, coordinating multiple ArchiveStore operations,
+    managing concurrency with async/await patterns, handling error cases, and implementing
+    business logic like content equivalent class assignment and duplicate reporting.
+
+    Contrast with ArchiveStore class, which provides low-level data operations for direct
+    storage access without workflow orchestration. Archive composes ArchiveStore primitives
+    into meaningful, user-facing operations with proper sequencing and error handling.
+    """
     __CONFIG_HASH_ALGORITHM = 'hash-algorithm'
-    __CONFIG_PENDING_ACTION = 'truncating'
 
     def __init__(self, processor: Processor, path: str | os.PathLike, create: bool = False,
                  output: Output | None = None):
         """Initialize archive with LevelDB index at path/.aridx/database.
-        
+
         Args:
             processor: File processing backend for hashing and comparison
             path: Archive root directory path
             create: Create .aridx directory if missing
             output: Output handler for duplicate reporting
-            
+
         Raises:
             FileNotFoundError: Archive directory does not exist
             NotADirectoryError: Archive path is not a directory
@@ -254,44 +245,9 @@ class Archive:
         if output is None:
             output = StandardOutput()
 
-        if not archive_path.exists():
-            raise FileNotFoundError(f"Archive {archive_path} does not exist")
-
-        if not archive_path.is_dir():
-            raise NotADirectoryError(f"Archive {archive_path} is not a directory")
-
-        index_path = archive_path / '.aridx'
-
-        if create:
-            index_path.mkdir(exist_ok=True)
-
-        if not index_path.exists():
-            raise ArchiveIndexNotFound(f"The index for archive {archive_path} has not been created")
-
-        if not index_path.is_dir():
-            raise NotADirectoryError(f"The index for archive {archive_path} is not a directory")
-
-        database_path = index_path / 'database'
-
-        database = None
-        try:
-            database = plyvel.DB(str(database_path), create_if_missing=True)
-            config_database: plyvel.DB = database.prefixed_db(Archive.__CONFIG_PREFIX)
-            file_hash_database: plyvel.DB = database.prefixed_db(Archive.__FILE_HASH_PREFIX)
-            file_signature_database: plyvel.DB = database.prefixed_db(Archive.__FILE_SIGNATURE_PREFIX)
-        except:
-            if database is not None:
-                database.close()
-            raise
-
+        self._store = ArchiveStore(archive_path, create)
         self._processor = processor
-        self._archive_path = archive_path
         self._output = output
-        self._alive = True
-        self._database = database
-        self._config_database = config_database
-        self._file_hash_database = file_hash_database
-        self._file_signature_database = file_signature_database
 
         self._hash_algorithms = {
             'sha256': (32, self._processor.sha256)
@@ -304,24 +260,22 @@ class Archive:
 
     def __enter__(self):
         """Context manager entry, validates archive is still alive."""
-        if not self._alive:
-            raise BrokenPipeError(f"Archive was closed")
-
+        self._store.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit, closes database connection."""
-        self.close()
+        self._store.__exit__(exc_type, exc_val, exc_tb)
 
     def close(self):
         """Close LevelDB database and mark archive as closed."""
-        if not getattr(self, '_alive', False):
-            return
+        if hasattr(self, '_store'):
+            self._store.close()
 
-        self._alive = False
-        self._file_hash_database = None
-        self._database.close()
-        self._database = None
+    @property
+    def _archive_path(self) -> Path:
+        """Get the archive root directory path."""
+        return self._store.archive_path
 
     def rebuild(self):
         """Completely rebuild index by truncating database and re-scanning all files.
@@ -333,9 +287,9 @@ class Archive:
 
     async def _do_rebuild(self):
         """Async implementation of rebuild operation."""
-        self._truncate()
+        self._store.truncate()
         await self._do_refresh(hash_algorithm=self._default_hash_algorithm)
-        self._write_config(Archive.__CONFIG_HASH_ALGORITHM, self._default_hash_algorithm)
+        self._store.write_config(Archive.__CONFIG_HASH_ALGORITHM, self._default_hash_algorithm)
 
     def refresh(self):
         """Incrementally update index by checking for file changes since last scan.
@@ -352,7 +306,7 @@ class Archive:
             keyed_lock = KeyedLock()
 
             if hash_algorithm is None:
-                hash_algorithm = self._read_config(Archive.__CONFIG_HASH_ALGORITHM)
+                hash_algorithm = self._store.read_config(Archive.__CONFIG_HASH_ALGORITHM)
 
                 if hash_algorithm is None:
                     raise RuntimeError("The index hasn't been build")
@@ -363,7 +317,7 @@ class Archive:
             _, calculate_digest = self._hash_algorithms[hash_algorithm]
 
             async def handle_file(path: Path, context: FileContext):
-                if self._lookup_file(context.relative_path()) is None:
+                if self._store.lookup_file(context.relative_path()) is None:
                     return await generate_signature(path, context.relative_path(), context.stat.st_mtime_ns)
                 return None
 
@@ -371,10 +325,10 @@ class Archive:
                 path = (self._archive_path / relative_path)
 
                 async def clean_up():
-                    self._register_file(relative_path, FileSignature(signature.digest, signature.mtime_ns, None))
+                    self._store.register_file(relative_path, FileSignature(signature.digest, signature.mtime_ns, None))
 
                     async with keyed_lock.lock(signature.digest):
-                        for ec_id, paths in self._list_content_equivalent_classes(signature.digest):
+                        for ec_id, paths in self._store.list_content_equivalent_classes(signature.digest):
                             if relative_path in paths:
                                 paths.remove(relative_path)
                                 break
@@ -382,9 +336,9 @@ class Archive:
                             ec_id = None
 
                         if ec_id is not None:
-                            self._store_content_equivalent_class(signature.digest, ec_id, paths)
+                            self._store.store_content_equivalent_class(signature.digest, ec_id, paths)
 
-                    self._deregister_file(relative_path)
+                    self._store.deregister_file(relative_path)
 
                 try:
                     stat = path.stat()
@@ -400,7 +354,7 @@ class Archive:
 
                 async with keyed_lock.lock(digest):
                     next_ec_id = 0
-                    for ec_id, paths in self._list_content_equivalent_classes(digest):
+                    for ec_id, paths in self._store.list_content_equivalent_classes(digest):
                         if next_ec_id <= ec_id:
                             next_ec_id = ec_id + 1
 
@@ -411,14 +365,14 @@ class Archive:
                         ec_id = next_ec_id
                         paths = [relative_path]
 
-                    self._register_file(relative_path, FileSignature(digest, mtime, None))
-                    self._store_content_equivalent_class(digest, ec_id, paths)
-                    self._register_file(relative_path, FileSignature(digest, mtime, ec_id))
+                    self._store.register_file(relative_path, FileSignature(digest, mtime, None))
+                    self._store.store_content_equivalent_class(digest, ec_id, paths)
+                    self._store.register_file(relative_path, FileSignature(digest, mtime, ec_id))
 
-            for path, signature in self._list_registered_files():
+            for path, signature in self._store.list_registered_files():
                 await throttler.schedule(refresh_entry(path, signature))
 
-            for path, context in self._walk_archive():
+            for path, context in self._store.walk_archive():
                 if context.is_file():
                     await throttler.schedule(handle_file(path, context))
 
@@ -439,7 +393,7 @@ class Archive:
         if ignore is None:
             ignore = FileMetadataDifferencePattern()
 
-        hash_algorithm = self._read_config(Archive.__CONFIG_HASH_ALGORITHM)
+        hash_algorithm = self._store.read_config(Archive.__CONFIG_HASH_ALGORITHM)
 
         if hash_algorithm is None:
             raise RuntimeError("The index hasn't been build")
@@ -474,7 +428,7 @@ class Archive:
                 digest = await calculate_digest(path)
 
                 # Find an equivalent class where the contents of files match the file at 'path'.
-                for ec_id, paths in self._list_content_equivalent_classes(digest):
+                for ec_id, paths in self._store.list_content_equivalent_classes(digest):
                     if await self._processor.compare_content(self._archive_path / paths[0], path):
                         # Only one match will suffice as all files in an equivalent class share the same content
                         break
@@ -678,7 +632,7 @@ class Archive:
             def make_default_directory_result():
                 return DiscardedMessage(DirectoryResult(inhibit_file_report=False))
 
-            for path, context in self._walk(input):
+            for path, context in self._store.walk(input):
                 # Inline send_message logic using the key directly in the dictionary
                 try:
                     message_gatherer = context.parent[handle_directory_entries]
@@ -701,162 +655,9 @@ class Archive:
 
     def inspect(self) -> Iterator[str]:
         """Generate human-readable index entries for debugging and inspection.
-        
+
         Yields:
             Formatted strings showing config, file-hash, and file-metadata entries
             with hex digests, timestamps, and URL-encoded paths
         """
-        hash_algorithm = self._read_config(Archive.__CONFIG_HASH_ALGORITHM)
-        if hash_algorithm in self._hash_algorithms:
-            hash_length, _ = self._hash_algorithms[hash_algorithm]
-        else:
-            hash_length = None
-
-        for key, value in self._database.iterator():
-            key: bytes
-            if key.startswith(Archive.__CONFIG_PREFIX):
-                entry = key[len(Archive.__CONFIG_PREFIX):].decode()
-                yield f'config {entry} {value.decode()}'
-            elif key.startswith(Archive.__FILE_HASH_PREFIX):
-                digest_and_ec_id = key[len(Archive.__FILE_HASH_PREFIX):]
-                paths = ' '.join((
-                    '/'.join((urllib.parse.quote_plus(part) for part in path))
-                    for path in msgpack.loads(value)))
-                if hash_length is not None:
-                    hex_digest = digest_and_ec_id[:hash_length].hex()
-                    ec_id = int.from_bytes(digest_and_ec_id[hash_length:])
-                    yield f'file-hash {hex_digest} {ec_id} {paths}'
-                else:
-                    hex_digest_and_ec_id = digest_and_ec_id.hex()
-                    yield f'file-hash *{hex_digest_and_ec_id} {paths}'
-            elif key.startswith(Archive.__FILE_SIGNATURE_PREFIX):
-                from datetime import datetime, timezone
-                path = Path(*[part.decode() for part in key[len(Archive.__FILE_SIGNATURE_PREFIX):].split(b'\0')])
-                [digest, mtime, ec_id] = msgpack.loads(value)
-                quoted_path = '/'.join((urllib.parse.quote_plus(part) for part in path.parts))
-                hex_digest = digest.hex()
-                mtime_string = \
-                    datetime.fromtimestamp(mtime / 1000000000, timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-                yield f'file-metadata {quoted_path} digest:{hex_digest} mtime:{mtime_string} ec_id:{ec_id}'
-            else:
-                yield f'OTHER {key} {value}'
-
-    def _truncate(self):
-        """Clear all file hash and signature entries, reset configuration."""
-        self._write_config(Archive.__CONFIG_PENDING_ACTION, 'truncate')
-        self._write_config(Archive.__CONFIG_HASH_ALGORITHM, None)
-
-        batch = self._file_signature_database.write_batch()
-        for key, _ in self._file_signature_database.iterator():
-            batch.delete(key)
-        batch.write()
-
-        batch = self._file_hash_database.write_batch()
-        for key, _ in self._file_hash_database.iterator():
-            batch.delete(key)
-        batch.write()
-
-        self._write_config(Archive.__CONFIG_PENDING_ACTION, None)
-
-    def _write_config(self, entry: str, value: str | None) -> None:
-        """Write or delete configuration entry. None value deletes the key."""
-        if value is None:
-            self._config_database.delete(entry.encode())
-        else:
-            self._config_database.put(entry.encode(), value.encode())
-
-    def _read_config(self, entry: str) -> str | None:
-        """Read configuration value from c: prefixed database entry."""
-        value = self._config_database.get(entry.encode())
-
-        if value is not None:
-            value = value.decode()
-
-        return value
-
-    def _register_file(self, path, signature: FileSignature) -> None:
-        """Store file signature in m: prefixed database entry.
-        
-        Args:
-            path: Relative path from archive root
-            signature: File metadata including digest, mtime_ns, and ec_id
-        """
-        self._file_signature_database.put(
-            b'\0'.join((str(part).encode() for part in path.parts)),
-            msgpack.dumps([signature.digest, signature.mtime_ns, signature.ec_id])
-        )
-
-    def _deregister_file(self, path):
-        """Remove file signature entry from database."""
-        self._file_signature_database.delete(b'\0'.join((str(part).encode() for part in path.parts)))
-
-    def _lookup_file(self, path) -> FileSignature | None:
-        """Retrieve stored file signature by path.
-        
-        Args:
-            path: Relative path from archive root
-            
-        Returns:
-            FileSignature if found, None otherwise
-        """
-        value = self._file_signature_database.get(b'\0'.join((str(part).encode() for part in path.parts)))
-
-        if value is None:
-            return None
-
-        return FileSignature(*msgpack.loads(value))
-
-    def _list_registered_files(self) -> Iterator[tuple[Path, FileSignature]]:
-        """Iterate all file signature entries, yielding (path, signature) pairs."""
-        for key, value in self._file_signature_database.iterator():
-            path = Path(*[part.decode() for part in key.split(b'\0')])
-            signature = FileSignature(*msgpack.loads(value))
-            yield path, signature
-
-    def _store_content_equivalent_class(self, digest: bytes, ec_id: int, paths: list[Path]) -> None:
-        """
-        Store an equivalent class in which all the files share the same content exactly.
-
-        :param digest: the digest of the content of files
-        :param ec_id: the id of this equivalent class, local to this particular digest
-        :param paths: the paths of files in the equivalent class, relative to the archive root
-        """
-        key = digest + ec_id.to_bytes(length=4).lstrip(b'\0')
-
-        if not paths:
-            self._file_hash_database.delete(key)
-        else:
-            data = [[str(part) for part in path.parts] for path in paths]
-            data.sort()
-            data = msgpack.dumps(data)
-            self._file_hash_database.put(key, data)
-
-    def _list_content_equivalent_classes(self, digest: bytes) -> Iterable[tuple[int, list[Path]]]:
-        """
-        List all the equivalent classes where the digest of content the files of each equivalent class matches the
-        specified argument.
-
-        :param digest: the digest of the content of files
-        """
-        ec_db: plyvel.DB = self._file_hash_database.prefixed_db(digest)
-        for key, data in ec_db.iterator():
-            ec_id = int.from_bytes(key)
-            data: list[list[str]] = msgpack.loads(data)
-            yield ec_id, [Path(*parts) for parts in data]
-
-    def _walk_archive(self) -> Iterator[tuple[Path, FileContext]]:
-        """Traverse archive directory excluding .aridx, yielding (path, context) pairs."""
-        context = FileContext(None, None, self._archive_path.stat())
-        context.exclude('.aridx')
-        yield from walk_recursively(self._archive_path, context)
-        context.complete()
-
-    def _walk(self, path: Path) -> Iterator[tuple[Path, FileContext]]:
-        """Traverse arbitrary path, yielding (path, context) pairs for duplicate detection."""
-        st = path.stat(follow_symlinks=False)
-        pseudo_parent = FileContext(None, None, st)
-        context = FileContext(pseudo_parent, path.name, st)
-        yield path, context
-        yield from walk_recursively(path, context)
-        context.complete()
-        pseudo_parent.complete()
+        yield from self._store.inspect(self._hash_algorithms)
