@@ -80,11 +80,6 @@ class Archive:
         if hasattr(self, '_store'):
             self._store.close()
 
-    @property
-    def _archive_path(self) -> Path:
-        """Get the archive root directory path."""
-        return self._store.archive_path
-
     def rebuild(self):
         """Completely rebuild index by truncating database and re-scanning all files.
 
@@ -94,7 +89,7 @@ class Archive:
         asyncio.run(do_rebuild(
             self._store,
             self._processor,
-            self._archive_path,
+            self._store.archive_path,
             self._hash_algorithms,
             self._default_hash_algorithm,
             Archive.__CONFIG_HASH_ALGORITHM
@@ -109,7 +104,7 @@ class Archive:
         asyncio.run(do_refresh(
             self._store,
             self._processor,
-            self._archive_path,
+            self._store.archive_path,
             self._hash_algorithms,
             Archive.__CONFIG_HASH_ALGORITHM
         ))
@@ -131,7 +126,7 @@ class Archive:
             self._store,
             self._processor,
             self._output,
-            self._archive_path,
+            self._store.archive_path,
             self._hash_algorithms,
             self._default_hash_algorithm,
             Archive.__CONFIG_HASH_ALGORITHM,
