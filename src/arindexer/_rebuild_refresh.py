@@ -12,20 +12,14 @@ from ._processor import Processor
 class RebuildRefreshArgs(NamedTuple):
     """Arguments for rebuild and refresh operations."""
     processor: Processor  # File processing backend for hashing and comparison
-    # Available hash algorithms mapping name to (digest_size, calculator)
-    hash_algorithms: dict[str, tuple[int, Callable[[Path], Awaitable[bytes]]]]
-    default_hash_algorithm: str  # Default hash algorithm name to use
+    hash_algorithm: tuple[int, Callable[[Path], Awaitable[bytes]]]  # Hash algorithm configuration (digest_size, calculator)
 
 
-async def do_rebuild(store: ArchiveStore, args: RebuildRefreshArgs):
+async def do_rebuild(store: ArchiveStore, args: RebuildRefreshArgs, hash_algorithm_name: str):
     """Async implementation of rebuild operation."""
     store.truncate()
-    await do_refresh(
-        store,
-        args,
-        hash_algorithm=args.default_hash_algorithm
-    )
-    store.write_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM, args.default_hash_algorithm)
+    await do_refresh(store, args)
+    store.write_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM, hash_algorithm_name)
 
 
 class RefreshProcessor:
@@ -34,32 +28,18 @@ class RefreshProcessor:
     def __init__(
         self,
         store: ArchiveStore,
-        args: RebuildRefreshArgs,
-        hash_algorithm: str | None = None
+        args: RebuildRefreshArgs
     ):
         self._store = store
         self._processor = args.processor
-        self._hash_algorithms = args.hash_algorithms
         self._archive_path = store.archive_path
-        self._hash_algorithm = hash_algorithm
-        self._calculate_digest = None
+        _, self._calculate_digest = args.hash_algorithm
         self._keyed_lock = KeyedLock()
 
     async def run(self):
         """Execute the refresh operation."""
         async with TaskGroup() as tg:
             throttler = Throttler(tg, self._processor.concurrency * 2)
-
-            if self._hash_algorithm is None:
-                self._hash_algorithm = self._store.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
-
-                if self._hash_algorithm is None:
-                    raise RuntimeError("The index hasn't been build")
-
-                if self._hash_algorithm not in self._hash_algorithms:
-                    raise RuntimeError(f"Unknown hash algorithm: {self._hash_algorithm}")
-
-            _, self._calculate_digest = self._hash_algorithms[self._hash_algorithm]
 
             for file_path, signature in self._store.list_registered_files():
                 await throttler.schedule(self._refresh_entry(file_path, signature))
@@ -126,10 +106,7 @@ class RefreshProcessor:
             self._store.register_file(relative_path, FileSignature(digest, mtime, ec_id))
 
 
-async def do_refresh(
-        store: ArchiveStore,
-        args: RebuildRefreshArgs,
-        hash_algorithm: str | None = None):
+async def do_refresh(store: ArchiveStore, args: RebuildRefreshArgs):
     """Async implementation of refresh operation with optional hash algorithm override."""
-    processor = RefreshProcessor(store, args, hash_algorithm)
+    processor = RefreshProcessor(store, args)
     await processor.run()

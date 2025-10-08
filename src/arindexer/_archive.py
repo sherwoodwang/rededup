@@ -1,7 +1,7 @@
 import asyncio
 import os
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Callable, Awaitable
 
 from ._processor import Processor
 from ._archive_store import ArchiveStore
@@ -90,9 +90,9 @@ class Archive:
             self._store,
             RebuildRefreshArgs(
                 self._processor,
-                self._hash_algorithms,
-                self._default_hash_algorithm
-            )
+                self._hash_algorithms[self._default_hash_algorithm]
+            ),
+            self._default_hash_algorithm
         ))
 
     def refresh(self):
@@ -105,8 +105,7 @@ class Archive:
             self._store,
             RebuildRefreshArgs(
                 self._processor,
-                self._hash_algorithms,
-                self._default_hash_algorithm
+                self._get_hash_algorithm()
             )
         ))
 
@@ -128,8 +127,7 @@ class Archive:
             FindDuplicatesArgs(
                 self._processor,
                 self._output,
-                self._hash_algorithms,
-                self._default_hash_algorithm,
+                self._get_hash_algorithm(),
                 input,
                 ignore
             )
@@ -143,3 +141,27 @@ class Archive:
             entries with hex digests, timestamps, and URL-encoded paths
         """
         yield from self._store.inspect(self._hash_algorithms)
+
+    def _get_hash_algorithm(self, hash_algorithm: str | None = None) -> tuple[int, Callable[[Path], Awaitable[bytes]]]:
+        """Get hash algorithm configuration.
+
+        Args:
+            hash_algorithm: Hash algorithm name, or None to use stored algorithm
+
+        Returns:
+            Tuple of (digest_size, calculator_function)
+
+        Raises:
+            RuntimeError: If no algorithm specified and index not built
+            RuntimeError: If unknown hash algorithm specified
+        """
+        if hash_algorithm is None:
+            hash_algorithm = self._store.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
+
+            if hash_algorithm is None:
+                raise RuntimeError("The index hasn't been build")
+
+            if hash_algorithm not in self._hash_algorithms:
+                raise RuntimeError(f"Unknown hash algorithm: {hash_algorithm}")
+
+        return self._hash_algorithms[hash_algorithm]

@@ -208,9 +208,7 @@ class FindDuplicatesArgs(NamedTuple):
     """Arguments for duplicate finding operations."""
     processor: Processor  # File processing backend for content comparison and metadata analysis
     output: Output  # Output handler for reporting duplicate findings
-    # Available hash algorithms mapping name to (digest_size, calculator)
-    hash_algorithms: dict[str, tuple[int, Callable[[Path], Awaitable[bytes]]]]
-    default_hash_algorithm: str  # Default hash algorithm name to use for digest calculation
+    hash_algorithm: tuple[int, Callable[[Path], Awaitable[bytes]]]  # Hash algorithm configuration (digest_size, calculator)
     input: Path  # Directory or file path to search for duplicates
     ignore: FileMetadataDifferencePattern  # Metadata differences to ignore when matching
 
@@ -220,17 +218,10 @@ async def do_find_duplicates(
         args: FindDuplicatesArgs):
     """Async implementation of duplicate finding with configurable metadata ignore patterns."""
     archive_path = store.archive_path
-    hash_algorithm = store.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
-
-    if hash_algorithm is None:
-        raise RuntimeError("The index hasn't been build")
-
-    if hash_algorithm not in args.hash_algorithms:
-        raise RuntimeError(f"Unknown hash algorithm: {hash_algorithm}")
 
     async with (TaskGroup() as tg):
         throttler = Throttler(tg, args.processor.concurrency * 2)
-        _, calculate_digest = args.hash_algorithms[args.default_hash_algorithm]
+        _, calculate_digest = args.hash_algorithm
 
         @dataclass
         class DiscoveredDuplicate:
