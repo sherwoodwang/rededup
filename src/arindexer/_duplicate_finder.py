@@ -208,7 +208,8 @@ class FindDuplicatesArgs(NamedTuple):
     """Arguments for duplicate finding operations."""
     processor: Processor  # File processing backend for content comparison and metadata analysis
     output: Output  # Output handler for reporting duplicate findings
-    hash_algorithms: dict  # Available hash algorithms mapping name to (digest_size, calculator)
+    # Available hash algorithms mapping name to (digest_size, calculator)
+    hash_algorithms: dict[str, tuple[int, Callable[[Path], Awaitable[bytes]]]]
     default_hash_algorithm: str  # Default hash algorithm name to use for digest calculation
     input: Path  # Directory or file path to search for duplicates
     ignore: FileMetadataDifferencePattern  # Metadata differences to ignore when matching

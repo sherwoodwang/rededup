@@ -222,6 +222,7 @@ class ArchiveStore:
         specified argument.
 
         :param digest: the digest of the content of files
+        :return: an iterable of tuples, each containing an equivalence class ID and a list of file paths in that class
         """
         ec_db: plyvel.DB = self._file_hash_database.prefixed_db(digest)
         for key, data in ec_db.iterator():
