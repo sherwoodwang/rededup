@@ -1,11 +1,9 @@
-import os
 import urllib.parse
 from pathlib import Path
-from typing import Iterator, Iterable
+from typing import Iterator, Iterable, Any
 
 import msgpack
 import plyvel
-from setuptools.command.egg_info import manifest_maker
 
 from ._walker import FileContext, walk_recursively
 
@@ -42,9 +40,9 @@ class ArchiveStore:
     refresh(), and find_duplicates() that orchestrate multiple ArchiveStore operations
     into complete workflows with proper error handling and concurrency management.
     """
-    __MANIFEST_PROPERTY_PREFIX = b'c:'
-    __FILE_HASH_PREFIX = b'h:'
-    __FILE_SIGNATURE_PREFIX = b'm:'
+    __MANIFEST_PROPERTY_PREFIX = b'p'
+    __FILE_HASH_PREFIX = b'h'
+    __FILE_SIGNATURE_PREFIX = b's'
 
     MANIFEST_HASH_ALGORITHM = 'hash-algorithm'
     MANIFEST_PENDING_ACTION = 'truncating'
@@ -153,7 +151,7 @@ class ArchiveStore:
             self._manifest_database.put(entry.encode(), value.encode())
 
     def read_manifest(self, entry: str) -> str | None:
-        """Read manifest property value from c: prefixed database entry."""
+        """Read manifest property value from 'p' prefixed database entry."""
         value = self._manifest_database.get(entry.encode())
 
         if value is not None:
@@ -231,7 +229,7 @@ class ArchiveStore:
             data: list[list[str]] = msgpack.loads(data)
             yield ec_id, [Path(*parts) for parts in data]
 
-    def inspect(self, hash_algorithms: dict[str, tuple[int, any]]) -> Iterator[str]:
+    def inspect(self, hash_algorithms: dict[str, tuple[int, Any]]) -> Iterator[str]:
         """Generate human-readable index entries for debugging and inspection.
 
         Args:
@@ -283,7 +281,8 @@ class ArchiveStore:
         yield from walk_recursively(self._archive_path, context)
         context.complete()
 
-    def walk(self, path: Path) -> Iterator[tuple[Path, FileContext]]:
+    @staticmethod
+    def walk(path: Path) -> Iterator[tuple[Path, FileContext]]:
         """Traverse arbitrary path, yielding (path, context) pairs for duplicate detection."""
         st = path.stat(follow_symlinks=False)
         pseudo_parent = FileContext(None, None, st)
