@@ -1354,6 +1354,57 @@ follow = ["link1"]
                     # link2 should NOT be followed (not configured in settings)
                     self.assertNotIn('link2/file2.txt', indexed_files)
 
+    def test_archive_path_is_symlink(self):
+        """Test that symlinks can be followed when archive path itself is a symlink."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the real archive directory
+            real_archive_path = Path(tmpdir) / 'real_archive'
+            real_archive_path.mkdir()
+
+            # Create a symlink to the archive
+            symlink_archive_path = Path(tmpdir) / 'symlink_archive'
+            symlink_archive_path.symlink_to(real_archive_path)
+
+            # Create .aridx directory and settings file using symlink path
+            aridx_path = symlink_archive_path / '.aridx'
+            aridx_path.mkdir()
+
+            settings_content = """
+[symlinks]
+follow = ["link1"]
+"""
+            (aridx_path / 'settings.toml').write_text(settings_content)
+
+            # Create an external directory (outside the archive)
+            external_dir = Path(tmpdir) / 'external_data'
+            external_dir.mkdir()
+            (external_dir / 'file1.txt').write_text('content1')
+            (external_dir / 'file2.txt').write_text('content2')
+
+            # Create a symlink inside the archive pointing outside
+            (symlink_archive_path / 'link1').symlink_to(external_dir)
+
+            # Also create a regular file in the archive
+            (symlink_archive_path / 'regular_file.txt').write_text('regular content')
+
+            with Processor() as processor:
+                # Open archive using the symlink path
+                with Archive(processor, str(symlink_archive_path), create=False) as archive:
+                    archive.rebuild()
+
+                    indexed_files = []
+                    for line in archive.inspect():
+                        if line.startswith('file-metadata'):
+                            parts = line.split()
+                            indexed_files.append(parts[1])
+
+                    # Regular file should be indexed
+                    self.assertIn('regular_file.txt', indexed_files)
+
+                    # External files through followed symlink should be indexed
+                    self.assertIn('link1/file1.txt', indexed_files)
+                    self.assertIn('link1/file2.txt', indexed_files)
+
 
 if __name__ == '__main__':
     unittest.main()

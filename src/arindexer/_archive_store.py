@@ -295,7 +295,7 @@ class ArchiveStore:
         def should_follow_symlink_wrapper(file_path: Path, file_context: FileContext) -> FileContext | None:
             """Wrapper to check symlink following policy."""
             if str(file_context.relative_path()) in symlinks_to_follow:
-                resolved_path = resolve_symlink_target(file_path, {self._archive_path})
+                resolved_path = resolve_symlink_target(file_path, {self._archive_path, self._archive_path.resolve()})
                 if resolved_path is not None:
                     return FileContext(file_context.parent, file_path.name, resolved_path, resolved_path.stat())
             return None
