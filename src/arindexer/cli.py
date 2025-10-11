@@ -50,6 +50,28 @@ def archive_indexer():
                     'rebuild for incremental updates.')
     parser_refresh.set_defaults(method=lambda a, _1, _2: a.refresh(), create=True)
 
+    parser_import = subparsers.add_parser(
+        'import',
+        help='Import index entries from another archive',
+        description='Import index entries from another archive. If the source archive is a nested directory of the '
+                    'current archive, entries are imported with the relative path prepended as a prefix. If the '
+                    'source archive is an ancestor directory, only entries within the current archive\'s scope are '
+                    'imported with their prefix removed.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent('''
+            Examples:
+              # Import from nested directory
+              arindexer import /archive/subdir
+
+              # Import from ancestor directory
+              cd /archive/subdir && arindexer import /archive
+            ''').strip())
+    parser_import.add_argument(
+        'source_archive',
+        metavar='SOURCE',
+        help='Path to the source archive directory to import from')
+    parser_import.set_defaults(method=_import_index, create=False)
+
     parser_find_duplicates = subparsers.add_parser(
         'find-duplicates',
         help='Find duplicate files against the archive',
@@ -147,6 +169,10 @@ def _find_duplicates(archive: Archive, output: StandardOutput, args):
 def _inspect(archive: Archive, output: StandardOutput, args):
     for record in archive.inspect():
         print(record)
+
+
+def _import_index(archive: Archive, output: StandardOutput, args):
+    archive.import_index(args.source_archive)
 
 
 if __name__ == '__main__':

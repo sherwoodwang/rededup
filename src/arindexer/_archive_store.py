@@ -10,7 +10,21 @@ from ._archive_settings import ArchiveSettings
 
 
 class FileSignature:
-    """File metadata signature for content tracking."""
+    """File metadata signature for content tracking.
+
+    Attributes:
+        digest: Content digest (hash) of the file
+        mtime_ns: File modification time in nanoseconds since epoch
+        ec_id: Equivalence Class ID - identifies which EC class this file belongs to
+               for the given digest. Can be None if not yet assigned to an EC class.
+
+    Notes:
+        - The ec_id is scoped to the digest; different digests can have the same ec_id
+        - The combination (digest, ec_id) identifies an EC class containing files with
+          identical content
+        - Files with the same digest but in different EC classes have different content
+          (hash collision case)
+    """
 
     def __init__(self, digest: bytes, mtime_ns: int, ec_id: int | None):
         self.digest = digest
@@ -41,6 +55,32 @@ class ArchiveStore:
     Contrast with Archive class, which provides high-level operations like rebuild(),
     refresh(), and find_duplicates() that orchestrate multiple ArchiveStore operations
     into complete workflows with proper error handling and concurrency management.
+
+    Content Equivalent Classes (EC Classes):
+
+    EC classes group files that have identical content. The key requirements are:
+
+    1. **Digest Scoping**: EC IDs are scoped per digest. Multiple digests can have
+       EC ID 0, EC ID 1, etc. The combination of (digest, ec_id) uniquely identifies
+       an EC class.
+
+    2. **Content Identity**: All files within an EC class MUST have byte-for-byte
+       identical content. This is critical for handling hash collisions - files with
+       the same digest but different content MUST be in separate EC classes.
+
+    3. **Hash Collision Handling**: When a hash collision occurs (same digest,
+       different content), files are separated into distinct EC classes with
+       different ec_ids. For example:
+       - Files A, B with digest "abc123" and content X → (digest="abc123", ec_id=0)
+       - Files C, D with digest "abc123" and content Y → (digest="abc123", ec_id=1)
+
+    4. **EC ID Assignment**: EC IDs start at 0 for each digest and increment as
+       needed. When importing or merging archives, EC IDs may need remapping to
+       avoid collisions while preserving content equivalence relationships.
+
+    5. **Content Verification**: Operations that merge EC classes (like import)
+       MUST verify that files actually have identical content by comparing bytes,
+       not just by assuming same digest means same content.
     """
     __MANIFEST_PROPERTY_PREFIX = b'p'
     __FILE_HASH_PREFIX = b'h'
@@ -203,12 +243,21 @@ class ArchiveStore:
             yield path, signature
 
     def store_content_equivalent_class(self, digest: bytes, ec_id: int, paths: list[Path]) -> None:
-        """
-        Store an equivalent class in which all the files share the same content exactly.
+        """Store an equivalent class containing files with identical content.
 
-        :param digest: the digest of the content of files
-        :param ec_id: the id of this equivalent class, local to this particular digest
-        :param paths: the paths of files in the equivalent class, relative to the archive root
+        IMPORTANT: All files in the paths list MUST have byte-for-byte identical content.
+        This invariant is critical for correct hash collision handling.
+
+        Args:
+            digest: Content digest of the files (hash value)
+            ec_id: Equivalence class ID, scoped to this digest (starts at 0)
+            paths: List of file paths with identical content, relative to archive root
+
+        Notes:
+            - EC IDs are local to each digest; different digests can reuse the same ec_id
+            - Empty paths list will delete the EC class entry
+            - Files with same digest but different content must use different ec_ids
+            - The combination (digest, ec_id) uniquely identifies an EC class
         """
         key = digest + ec_id.to_bytes(length=4).lstrip(b'\0')
 
@@ -221,12 +270,24 @@ class ArchiveStore:
             self._file_hash_database.put(key, data)
 
     def list_content_equivalent_classes(self, digest: bytes) -> Iterable[tuple[int, list[Path]]]:
-        """
-        List all the equivalent classes where the digest of content the files of each equivalent class matches the
-        specified argument.
+        """List all equivalent classes for files with the specified digest.
 
-        :param digest: the digest of the content of files
-        :return: an iterable of tuples, each containing an equivalence class ID and a list of file paths in that class
+        Returns all EC classes where files have the given digest. Each EC class contains
+        files with identical content. Multiple EC classes with the same digest indicate
+        a hash collision - files with the same digest but different actual content.
+
+        Args:
+            digest: Content digest to query (hash value)
+
+        Yields:
+            Tuples of (ec_id, paths) where:
+            - ec_id: Equivalence class ID (scoped to this digest)
+            - paths: List of file paths with identical content in this EC class
+
+        Example:
+            For digest "abc123" with a hash collision:
+            - (0, [Path("file1.txt"), Path("file2.txt")])  # Content X
+            - (1, [Path("file3.txt"), Path("file4.txt")])  # Content Y (different from X)
         """
         ec_db: plyvel.DB = self._file_hash_database.prefixed_db(digest)
         for key, data in ec_db.iterator():

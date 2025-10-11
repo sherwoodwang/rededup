@@ -14,6 +14,7 @@ from ._duplicate_finder import (
     StandardOutput
 )
 from ._rebuild_refresh import do_rebuild, do_refresh, RebuildRefreshArgs
+from ._archive_importer import do_import, ImportArgs
 
 
 class Archive:
@@ -110,6 +111,27 @@ class Archive:
                 self._processor,
                 self._get_hash_algorithm()
             )
+        ))
+
+    def import_index(self, source_archive_path: str | os.PathLike):
+        """Import index entries from another archive with path transformation.
+
+        If the source archive is a nested directory of the current archive,
+        entries are imported with the relative path prepended as a prefix.
+        If the source archive is an ancestor directory of the current archive,
+        only entries within the current archive's scope are imported with
+        their prefix removed.
+
+        Args:
+            source_archive_path: Path to source archive directory
+
+        Raises:
+            ValueError: If source archive is invalid, same as current, or
+                       relationship is neither nested nor ancestor
+        """
+        asyncio.run(do_import(
+            self._store,
+            ImportArgs(Path(source_archive_path), self._processor)
         ))
 
     def find_duplicates(self, input: Path, ignore: FileMetadataDifferencePattern | None = None):
