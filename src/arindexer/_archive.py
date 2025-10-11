@@ -5,6 +5,7 @@ from typing import Iterator, Callable, Awaitable
 
 from ._processor import Processor
 from ._archive_store import ArchiveStore
+from ._archive_settings import ArchiveSettings
 from ._duplicate_finder import (
     do_find_duplicates,
     FindDuplicatesArgs,
@@ -53,7 +54,9 @@ class Archive:
         if output is None:
             output = StandardOutput()
 
-        self._store = ArchiveStore(archive_path, create)
+        settings = ArchiveSettings(archive_path)
+
+        self._store = ArchiveStore(settings, archive_path, create)
         self._processor = processor
         self._output = output
 

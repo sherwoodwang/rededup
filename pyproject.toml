@@ -8,6 +8,7 @@ version = "0.0.1"
 dependencies = [
     "msgpack",
     "plyvel",
+    "tomli; python_version < '3.11'",
 ]
 
 [tool.setuptools.packages.find]

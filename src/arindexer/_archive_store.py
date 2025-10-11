@@ -5,11 +5,13 @@ from typing import Iterator, Iterable, Any
 import msgpack
 import plyvel
 
-from ._walker import FileContext, walk_recursively
+from ._walker import FileContext, WalkPolicy, walk_with_policy, resolve_symlink_target
+from ._archive_settings import ArchiveSettings
 
 
 class FileSignature:
     """File metadata signature for content tracking."""
+
     def __init__(self, digest: bytes, mtime_ns: int, ec_id: int | None):
         self.digest = digest
         self.mtime_ns = mtime_ns
@@ -47,10 +49,11 @@ class ArchiveStore:
     MANIFEST_HASH_ALGORITHM = 'hash-algorithm'
     MANIFEST_PENDING_ACTION = 'truncating'
 
-    def __init__(self, archive_path: Path, create: bool = False):
+    def __init__(self, settings: ArchiveSettings, archive_path: Path, create: bool = False):
         """Initialize raw archive with LevelDB database.
 
         Args:
+            settings: Archive settings for configuration
             archive_path: Archive root directory path
             create: Create .aridx directory if missing
 
@@ -95,6 +98,7 @@ class ArchiveStore:
         self._manifest_database = manifest_database
         self._file_hash_database = file_hash_database
         self._file_signature_database = file_signature_database
+        self._settings = settings
 
     def __del__(self):
         """Destructor ensures database is closed."""
@@ -276,19 +280,38 @@ class ArchiveStore:
                 yield f'OTHER {key} {value}'
 
     def walk_archive(self) -> Iterator[tuple[Path, FileContext]]:
-        """Traverse archive directory excluding .aridx, yielding (path, context) pairs."""
-        context = FileContext(None, None, self._archive_path.stat())
-        context.exclude('.aridx')
-        yield from walk_recursively(self._archive_path, context)
-        context.complete()
+        """Traverse archive directory excluding .aridx, yielding (path, context) pairs.
+
+        Symlinks configured in settings under 'symlinks.follow' will be followed during traversal.
+        When a symlink is followed, a substitute FileContext is created with stat information from
+        the symlink target rather than the symlink itself.
+        """
+        # Parse symlink follow configuration from settings
+        follow_list = self._settings.get('symlinks.follow', [])
+        symlinks_to_follow: set[str] = set()
+        if isinstance(follow_list, list):
+            symlinks_to_follow = set(str(p) for p in follow_list)
+
+        def should_follow_symlink_wrapper(file_path: Path, file_context: FileContext) -> FileContext | None:
+            """Wrapper to check symlink following policy."""
+            if str(file_context.relative_path()) in symlinks_to_follow:
+                resolved_path = resolve_symlink_target(file_path, {self._archive_path})
+                if resolved_path is not None:
+                    return FileContext(file_context.parent, file_path.name, resolved_path, resolved_path.stat())
+            return None
+
+        policy = WalkPolicy(
+            excluded_paths={Path('.aridx')},
+            should_follow_symlink=should_follow_symlink_wrapper
+        )
+        yield from walk_with_policy(self._archive_path, policy)
 
     @staticmethod
     def walk(path: Path) -> Iterator[tuple[Path, FileContext]]:
         """Traverse arbitrary path, yielding (path, context) pairs for duplicate detection."""
-        st = path.stat(follow_symlinks=False)
-        pseudo_parent = FileContext(None, None, st)
-        context = FileContext(pseudo_parent, path.name, st)
-        yield path, context
-        yield from walk_recursively(path, context)
-        context.complete()
-        pseudo_parent.complete()
+        policy = WalkPolicy(
+            excluded_paths=set(),
+            should_follow_symlink=lambda file_path, file_context: None,
+            yield_root=True
+        )
+        yield from walk_with_policy(path, policy)
