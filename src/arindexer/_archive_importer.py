@@ -48,25 +48,87 @@ class ImportProcessor:
             # This is the expected case, so we continue
             pass
 
+    def _validate_path_traversal(self, base_path: Path, relative_path: Path):
+        """Validate that the relative path doesn't traverse through symlinks.
+
+        Checks each component of the relative path to ensure it's not a symlink
+        or a followed symlink as configured in the containing archive's settings.
+        This prevents importing from archives that can't be reached by the
+        containing archive's walker.
+
+        Args:
+            base_path: The base archive path (containing archive)
+            relative_path: The relative path from base to target
+
+        Raises:
+            ValueError: If path traverses through a symlink
+        """
+        # Get symlink following configuration from the containing archive (current)
+        from ._archive_settings import ArchiveSettings, SETTING_FOLLOWED_SYMLINKS
+        settings = ArchiveSettings(base_path)
+        follow_list = settings.get(SETTING_FOLLOWED_SYMLINKS, [])
+        symlinks_to_follow: set[Path] = set()
+        if isinstance(follow_list, list):
+            symlinks_to_follow = {Path(p) for p in follow_list}
+
+        # Check each component of the path
+        current = base_path
+        for component in relative_path.parts:
+            current = current / component
+
+            # Check if this component is a symlink
+            try:
+                stat_result = current.lstat()
+                import stat
+                if stat.S_ISLNK(stat_result.st_mode):
+                    # This is a symlink - check if it's in the follow list
+                    try:
+                        rel = current.relative_to(base_path)
+                        if rel not in symlinks_to_follow:
+                            raise ValueError(
+                                f"Cannot import from archive: path traverses through symlink '{rel}' "
+                                f"which is not configured to be followed in the containing archive"
+                            )
+                    except ValueError as e:
+                        if "not configured to be followed" not in str(e):
+                            # relative_to failed, re-raise original error
+                            raise
+                        raise
+            except (OSError, FileNotFoundError) as e:
+                raise ValueError(f"Cannot validate path component '{current}': {e}")
+
     def _determine_relationship(self):
         """Determine whether source is nested in current or current is nested in source."""
+        # First try to determine the relationship based on path containment
+        is_nested = False
+        is_ancestor = False
+        rel_path = None
+
         try:
             # Try to get relative path from current to source
             rel_path = self.source_path.relative_to(self.current_path)
-            self.is_nested = True
-            self.prefix_to_add = rel_path
+            is_nested = True
         except ValueError:
             # Source is not nested in current, try the other direction
             try:
                 rel_path = self.current_path.relative_to(self.source_path)
-                self.is_ancestor = True
-                self.prefix_to_remove = rel_path
+                is_ancestor = True
             except ValueError:
                 # Neither nested nor ancestor
                 raise ValueError(
                     f"Source archive must be either a nested directory of the current archive "
                     f"or an ancestor directory containing the current archive"
                 )
+
+        # Now validate the path doesn't traverse through unfollowed symlinks
+        if is_nested:
+            self._validate_path_traversal(self.current_path, rel_path)
+            self.is_nested = True
+            self.prefix_to_add = rel_path
+        elif is_ancestor:
+            self._validate_path_traversal(self.source_path, rel_path)
+            self.is_ancestor = True
+            self.prefix_to_remove = rel_path
 
     def _open_source_archive(self):
         """Open the source archive store."""

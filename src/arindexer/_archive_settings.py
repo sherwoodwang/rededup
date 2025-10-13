@@ -6,6 +6,10 @@ except ModuleNotFoundError:
     import tomli as tomllib
 
 
+# Settings key constants
+SETTING_FOLLOWED_SYMLINKS = 'followed_symlinks'
+
+
 class ArchiveSettings:
     """Settings manager for archive configuration.
 
@@ -16,7 +20,7 @@ class ArchiveSettings:
 
     Example:
         settings = ArchiveSettings(archive_path)
-        follow_list = settings.get('symlinks.follow', [])
+        follow_list = settings.get(SETTING_FOLLOWED_SYMLINKS, [])
         hash_algorithm = settings.get('index.hash_algorithm', 'sha256')
     """
 
@@ -40,9 +44,10 @@ class ArchiveSettings:
     def get(self, key: str, default=None):
         """Get a setting value by key with optional default.
 
-        Supports dot notation for accessing nested keys (e.g., 'symlinks.follow' accesses
-        settings['symlinks']['follow']). Returns the default value if the key path does
-        not exist or if any intermediate value is not a dictionary.
+        Supports both simple keys (e.g., 'followed_symlinks') and dot notation for
+        accessing nested keys (e.g., 'index.hash_algorithm' accesses
+        settings['index']['hash_algorithm']). Returns the default value if the key path
+        does not exist or if any intermediate value is not a dictionary.
 
         Args:
             key: Setting key path using dot notation for nested keys
@@ -52,7 +57,7 @@ class ArchiveSettings:
             Setting value at the specified key path, or default if not found
 
         Examples:
-            >>> settings.get('symlinks.follow', [])
+            >>> settings.get(SETTING_FOLLOWED_SYMLINKS, [])
             ['dir1', 'dir2/subdir']
             >>> settings.get('nonexistent.key', 'fallback')
             'fallback'

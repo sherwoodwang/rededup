@@ -6,7 +6,7 @@ import msgpack
 import plyvel
 
 from ._walker import FileContext, WalkPolicy, walk_with_policy, resolve_symlink_target
-from ._archive_settings import ArchiveSettings
+from ._archive_settings import ArchiveSettings, SETTING_FOLLOWED_SYMLINKS
 
 
 class FileSignature:
@@ -343,12 +343,12 @@ class ArchiveStore:
     def walk_archive(self) -> Iterator[tuple[Path, FileContext]]:
         """Traverse archive directory excluding .aridx, yielding (path, context) pairs.
 
-        Symlinks configured in settings under 'symlinks.follow' will be followed during traversal.
+        Symlinks configured in the 'followed_symlinks' setting will be followed during traversal.
         When a symlink is followed, a substitute FileContext is created with stat information from
         the symlink target rather than the symlink itself.
         """
         # Parse symlink follow configuration from settings
-        follow_list = self._settings.get('symlinks.follow', [])
+        follow_list = self._settings.get(SETTING_FOLLOWED_SYMLINKS, [])
         symlinks_to_follow: set[str] = set()
         if isinstance(follow_list, list):
             symlinks_to_follow = set(str(p) for p in follow_list)

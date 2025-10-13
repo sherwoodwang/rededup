@@ -1279,8 +1279,7 @@ class SymlinkFollowingTest(unittest.TestCase):
             aridx_path.mkdir()
 
             settings_content = """
-[symlinks]
-follow = ["parent/linked_dir"]
+followed_symlinks = ["parent/linked_dir"]
 """
             (aridx_path / 'settings.toml').write_text(settings_content)
 
@@ -1321,8 +1320,7 @@ follow = ["parent/linked_dir"]
 
             # Only follow link1, not link2
             settings_content = """
-[symlinks]
-follow = ["link1"]
+followed_symlinks = ["link1"]
 """
             (aridx_path / 'settings.toml').write_text(settings_content)
 
@@ -1371,8 +1369,7 @@ follow = ["link1"]
             aridx_path.mkdir()
 
             settings_content = """
-[symlinks]
-follow = ["link1"]
+followed_symlinks = ["link1"]
 """
             (aridx_path / 'settings.toml').write_text(settings_content)
 
@@ -1717,6 +1714,163 @@ class ImportTest(unittest.TestCase):
                     nested_ec_id = indexed_files['nested/nested_file1.txt'][1]
                     self.assertNotEqual(parent_ec_id, nested_ec_id,
                                        "Files with different content should have different EC IDs even with same digest")
+
+    def test_import_rejects_path_through_unfollowed_symlink(self):
+        """Test that importing through an unfollowed symlink is rejected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create parent archive
+            parent_path = Path(tmpdir) / 'parent_archive'
+            parent_path.mkdir()
+
+            # Create a real directory
+            real_dir = parent_path / 'real_dir'
+            real_dir.mkdir()
+
+            # Create nested archive inside the real directory
+            nested_path = real_dir / 'nested_archive'
+            nested_path.mkdir()
+            (nested_path / 'file.txt').write_text('content')
+
+            # Create a symlink pointing to the real directory
+            symlink_path = parent_path / 'symlink_dir'
+            symlink_path.symlink_to(real_dir)
+
+            # Build the nested archive
+            with Processor() as processor:
+                with Archive(processor, str(nested_path), create=True) as nested_archive:
+                    nested_archive.rebuild()
+
+                # Try to import using the symlink path - should fail
+                # The import path goes through: parent_path -> symlink_dir -> nested_archive
+                with Archive(processor, str(parent_path), create=True) as parent_archive:
+                    # Use symlink path to reference the nested archive
+                    symlink_nested_path = symlink_path / 'nested_archive'
+                    with self.assertRaises(ValueError) as context:
+                        parent_archive.import_index(str(symlink_nested_path))
+                    self.assertIn('symlink', str(context.exception).lower())
+                    self.assertIn('not configured to be followed', str(context.exception))
+
+    def test_import_accepts_path_through_followed_symlink(self):
+        """Test that importing through a followed symlink is accepted."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create parent archive
+            parent_path = Path(tmpdir) / 'parent_archive'
+            parent_path.mkdir()
+
+            # Create a real directory
+            real_dir = parent_path / 'real_dir'
+            real_dir.mkdir()
+
+            # Create nested archive inside the real directory
+            nested_path = real_dir / 'nested_archive'
+            nested_path.mkdir()
+            (nested_path / 'file.txt').write_text('content')
+
+            # Create a symlink pointing to the real directory
+            symlink_path = parent_path / 'symlink_dir'
+            symlink_path.symlink_to(real_dir)
+
+            # Configure parent archive to follow the symlink
+            aridx_path = parent_path / '.aridx'
+            aridx_path.mkdir()
+            settings_path = aridx_path / 'settings.toml'
+            settings_path.write_text('followed_symlinks = ["symlink_dir"]\n')
+
+            # Build the nested archive
+            with Processor() as processor:
+                with Archive(processor, str(nested_path), create=True) as nested_archive:
+                    nested_archive.rebuild()
+
+                # Import using the symlink path - should succeed
+                with Archive(processor, str(parent_path), create=False) as parent_archive:
+                    symlink_nested_path = symlink_path / 'nested_archive'
+                    parent_archive.import_index(str(symlink_nested_path))
+
+                    # Verify the file was imported
+                    indexed_files = []
+                    for line in parent_archive.inspect():
+                        if line.startswith('file-metadata'):
+                            parts = line.split()
+                            path = urllib.parse.unquote_plus(parts[1])
+                            indexed_files.append(path)
+
+                    self.assertIn('symlink_dir/nested_archive/file.txt', indexed_files)
+
+    def test_import_rejects_nested_path_through_unfollowed_symlink(self):
+        """Test that importing rejects paths with symlinks deep in the hierarchy."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create parent archive
+            parent_path = Path(tmpdir) / 'parent_archive'
+            parent_path.mkdir()
+
+            # Create directory structure: dir1/symlink_dir/dir2/nested_archive
+            dir1 = parent_path / 'dir1'
+            dir1.mkdir()
+
+            # Create the real target
+            real_target = parent_path / 'real_target'
+            real_target.mkdir()
+            dir2 = real_target / 'dir2'
+            dir2.mkdir()
+
+            # Create nested archive
+            nested_path = dir2 / 'nested_archive'
+            nested_path.mkdir()
+            (nested_path / 'file.txt').write_text('content')
+
+            # Create symlink in the middle of the path
+            symlink_path = dir1 / 'symlink_dir'
+            symlink_path.symlink_to(real_target)
+
+            # Build the nested archive
+            with Processor() as processor:
+                with Archive(processor, str(nested_path), create=True) as nested_archive:
+                    nested_archive.rebuild()
+
+                # Try to import - should fail because path goes through unfollowed symlink
+                with Archive(processor, str(parent_path), create=True) as parent_archive:
+                    symlink_nested_path = dir1 / 'symlink_dir' / 'dir2' / 'nested_archive'
+                    with self.assertRaises(ValueError) as context:
+                        parent_archive.import_index(str(symlink_nested_path))
+                    self.assertIn('symlink', str(context.exception).lower())
+                    self.assertIn('dir1/symlink_dir', str(context.exception))
+
+    def test_import_ancestor_validates_symlinks_in_containing_path(self):
+        """Test that importing from ancestor validates symlinks in the contained archive's path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create ancestor archive
+            ancestor_path = Path(tmpdir) / 'ancestor'
+            ancestor_path.mkdir()
+
+            # Create a real directory in ancestor
+            real_dir = ancestor_path / 'real_subdir'
+            real_dir.mkdir()
+
+            # Create a symlink in ancestor pointing to real_dir
+            symlink = ancestor_path / 'symlink_subdir'
+            symlink.symlink_to(real_dir)
+
+            # Create contained archive through symlink path
+            # Physical path: ancestor/real_subdir/contained
+            # Symlink path: ancestor/symlink_subdir/contained
+            contained_path = real_dir / 'contained'
+            contained_path.mkdir()
+            (ancestor_path / 'file.txt').write_text('ancestor file')
+            (contained_path / 'contained_file.txt').write_text('contained file')
+
+            # Build ancestor archive
+            with Processor() as processor:
+                with Archive(processor, str(ancestor_path), create=True) as ancestor_archive:
+                    ancestor_archive.rebuild()
+
+                # Try to import into contained archive using symlink path
+                # The contained archive is at ancestor/symlink_subdir/contained
+                # When validating, it needs to check if symlink_subdir is followed
+                symlink_contained_path = symlink / 'contained'
+                with Archive(processor, str(symlink_contained_path), create=True) as contained_archive:
+                    with self.assertRaises(ValueError) as context:
+                        contained_archive.import_index(str(ancestor_path))
+                    self.assertIn('symlink', str(context.exception).lower())
 
 
 if __name__ == '__main__':
