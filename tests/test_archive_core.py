@@ -9,7 +9,7 @@ from arindexer import Archive, FileMetadataDifferencePattern, FileMetadataDiffer
 # noinspection PyProtectedMember
 from arindexer._processor import Processor
 
-from test_utils import CollectingOutput, compute_xor, copy_times, tweak_times
+from .test_utils import CollectingOutput, compute_xor, copy_times, tweak_times
 
 
 # noinspection DuplicatedCode
@@ -424,26 +424,29 @@ with open(Path(__file__).parent / "test_common_lifecycle_0.txt") as f:
 
 _test_common_lifecycle_1 = \
     (_test_common_lifecycle_0 | {
-        'file-hash 3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 0 sample74/sample10-another',
+        'file-hash 3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 ec_id:0 path_hash:0x229a29ac seq:0 sample74/sample10-another',
     }) - {
-        'file-hash 3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 0 sample74/sample10-another sample8/sample10',
+        'file-hash 3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 ec_id:0 path_hash:0xe438056b seq:0 sample8/sample10',
         'file-metadata sample8/sample10 digest:3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 mtime: ec_id:0',
     }
 
 _test_common_lifecycle_2 = _test_common_lifecycle_0 - {
     'file-metadata sample74/sample10-another digest:3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 mtime: ec_id:0',
-    'file-hash 3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 0 sample74/sample10-another sample8/sample10',
+    'file-hash 3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 ec_id:0 path_hash:0x229a29ac seq:0 sample74/sample10-another',
+    'file-hash 3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 ec_id:0 path_hash:0xe438056b seq:0 sample8/sample10',
     'file-metadata sample8/sample10 digest:3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 mtime: ec_id:0',
 }
 
 _test_common_lifecycle_3 = \
     (_test_common_lifecycle_0 | {
-        'file-hash 8b1cebc0d516efab2efe357a3bb49fe2dc96a45263e20312b433fa0e11fb909d 0 sample75',
+        'file-hash 8b1cebc0d516efab2efe357a3bb49fe2dc96a45263e20312b433fa0e11fb909d ec_id:0 path_hash:0x2391050c seq:0 sample75',
         'file-metadata sample75 digest:8b1cebc0d516efab2efe357a3bb49fe2dc96a45263e20312b433fa0e11fb909d mtime: ec_id:0',
     }) - {
         'file-metadata sample74/sample10-another digest:3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 mtime: ec_id:0',
         'file-metadata sample8/sample10 digest:3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 mtime: ec_id:0',
         'file-hash 3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 0 sample74/sample10-another sample8/sample10',
+        'file-hash 3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 ec_id:0 path_hash:0xe438056b seq:0 sample8/sample10',
+        'file-hash 3295e3883b6f050e81f0eb6e8adb918ffab48d462c607cc748e4e71378ee64e6 ec_id:0 path_hash:0x229a29ac seq:0 sample74/sample10-another',
     }
 
 # Load _test_rebuild_with_collision_data from external file

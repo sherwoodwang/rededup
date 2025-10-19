@@ -12,7 +12,8 @@ from ._processor import Processor
 class RebuildRefreshArgs(NamedTuple):
     """Arguments for rebuild and refresh operations."""
     processor: Processor  # File processing backend for hashing and comparison
-    hash_algorithm: tuple[int, Callable[[Path], Awaitable[bytes]]]  # Hash algorithm configuration (digest_size, calculator)
+    # Hash algorithm configuration (digest_size, calculator)
+    hash_algorithm: tuple[int, Callable[[Path], Awaitable[bytes]]]
 
 
 async def do_rebuild(store: ArchiveStore, args: RebuildRefreshArgs, hash_algorithm_name: str):
@@ -25,11 +26,7 @@ async def do_rebuild(store: ArchiveStore, args: RebuildRefreshArgs, hash_algorit
 class RefreshProcessor:
     """Processor for refresh operations that encapsulates state and logic."""
 
-    def __init__(
-        self,
-        store: ArchiveStore,
-        args: RebuildRefreshArgs
-    ):
+    def __init__(self, store: ArchiveStore, args: RebuildRefreshArgs):
         self._store = store
         self._processor = args.processor
         self._archive_path = store.archive_path
@@ -50,8 +47,10 @@ class RefreshProcessor:
 
     async def _handle_file(self, file_path: Path, file_context: FileContext):
         """Handle a file found during archive walk."""
+        # Generate signature only for new files. Existing files are handled in _refresh_entry().
         if self._store.lookup_file(file_context.relative_path()) is None:
-            return await self._generate_signature(file_path, file_context.relative_path(), file_context.stat.st_mtime_ns)
+            return await self._generate_signature(
+                file_path, file_context.relative_path(), file_context.stat.st_mtime_ns)
         return None
 
     async def _refresh_entry(self, relative_path: Path, entry_signature: FileSignature):
@@ -63,7 +62,8 @@ class RefreshProcessor:
         except FileNotFoundError:
             await self._clean_up(relative_path, entry_signature)
         else:
-            if entry_signature.mtime_ns is None or entry_signature.mtime_ns < stat.st_mtime_ns:
+            if entry_signature.mtime_ns is None or entry_signature.mtime_ns < stat.st_mtime_ns or \
+                    entry_signature.ec_id is None:
                 await self._clean_up(relative_path, entry_signature)
                 return await self._generate_signature(file_path, relative_path, stat.st_mtime_ns)
 
@@ -72,15 +72,8 @@ class RefreshProcessor:
         self._store.register_file(relative_path, FileSignature(entry_signature.digest, entry_signature.mtime_ns, None))
 
         async with self._keyed_lock.lock(entry_signature.digest):
-            for ec_id, paths in self._store.list_content_equivalent_classes(entry_signature.digest):
-                if relative_path in paths:
-                    paths.remove(relative_path)
-                    break
-            else:
-                ec_id = None
-
-            if ec_id is not None:
-                self._store.store_content_equivalent_class(entry_signature.digest, ec_id, paths)
+            if entry_signature.ec_id is not None:
+                self._store.remove_paths_from_equivalent_class(entry_signature.digest, entry_signature.ec_id, [relative_path])
 
         self._store.deregister_file(relative_path)
 
@@ -95,14 +88,12 @@ class RefreshProcessor:
                     next_ec_id = ec_id + 1
 
                 if await self._processor.compare_content(file_path, self._archive_path / paths[0]):
-                    paths.append(relative_path)
                     break
             else:
                 ec_id = next_ec_id
-                paths = [relative_path]
 
             self._store.register_file(relative_path, FileSignature(digest, mtime, None))
-            self._store.store_content_equivalent_class(digest, ec_id, paths)
+            self._store.add_paths_to_equivalent_class(digest, ec_id, [relative_path])
             self._store.register_file(relative_path, FileSignature(digest, mtime, ec_id))
 
 

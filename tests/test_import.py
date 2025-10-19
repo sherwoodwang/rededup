@@ -8,7 +8,7 @@ from arindexer import Archive
 # noinspection PyProtectedMember
 from arindexer._processor import Processor
 
-from test_utils import compute_xor
+from .test_utils import compute_xor
 
 
 class ImportTest(unittest.TestCase):

@@ -179,7 +179,7 @@ class ImportProcessor:
             # Should not happen due to validation, but return as-is
             return path
 
-    async def _process_digest_and_files(self, digest: str):
+    async def _process_digest_and_files(self, digest: bytes):
         """Process all EC classes for a digest and import file signatures.
 
         For each source EC class, we compare file content with existing EC classes
@@ -219,15 +219,11 @@ class ImportProcessor:
                     # Content matches! Merge into this existing EC class
                     target_ec_id = ec_id
                     # Add transformed paths to this EC class
-                    all_paths = list(ec_paths)
-                    for p in transformed_paths:
-                        if p not in all_paths:
-                            all_paths.append(p)
-                    # Update the EC class
-                    self.store.store_content_equivalent_class(digest, target_ec_id, all_paths)
+                    self.store.add_paths_to_equivalent_class(digest, target_ec_id, transformed_paths)
                     # Update our cached list
-                    existing_ec_classes = [(ec_id, all_paths if ec_id == target_ec_id else paths)
-                                          for ec_id, paths in existing_ec_classes]
+                    for p in transformed_paths:
+                        if p not in ec_paths:
+                            ec_paths.append(p)
                     break
 
             # No matching EC class found, create a new one
@@ -235,9 +231,9 @@ class ImportProcessor:
                 target_ec_id = next_available_ec_id
                 next_available_ec_id += 1
                 # Store the new EC class
-                self.store.store_content_equivalent_class(digest, target_ec_id, transformed_paths)
+                self.store.add_paths_to_equivalent_class(digest, target_ec_id, transformed_paths)
                 # Add to our cached list
-                existing_ec_classes.append((target_ec_id, transformed_paths))
+                existing_ec_classes.append((target_ec_id, list(transformed_paths)))
 
             # Import file signatures for files in this EC class
             for source_path in source_paths:
@@ -322,6 +318,9 @@ class ImportProcessor:
 
             # Outer loop: scan file signatures from source
             for file_path, signature in self.source_store.list_registered_files():
+                file_path: Path
+                signature: FileSignature
+
                 transformed_path = self._transform_path(file_path)
                 if transformed_path is None:
                     # File is outside scope, skip
