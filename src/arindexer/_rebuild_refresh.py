@@ -69,7 +69,7 @@ class RefreshProcessor:
 
     async def _clean_up(self, relative_path: Path, entry_signature: FileSignature):
         """Clean up an entry that needs to be refreshed or removed."""
-        self._store.register_file(relative_path, FileSignature(entry_signature.digest, entry_signature.mtime_ns, None))
+        self._store.register_file(relative_path, FileSignature(relative_path, entry_signature.digest, entry_signature.mtime_ns, None))
 
         async with self._keyed_lock.lock(entry_signature.digest):
             if entry_signature.ec_id is not None:
@@ -92,9 +92,9 @@ class RefreshProcessor:
             else:
                 ec_id = next_ec_id
 
-            self._store.register_file(relative_path, FileSignature(digest, mtime, None))
+            self._store.register_file(relative_path, FileSignature(relative_path, digest, mtime, None))
             self._store.add_paths_to_equivalent_class(digest, ec_id, [relative_path])
-            self._store.register_file(relative_path, FileSignature(digest, mtime, ec_id))
+            self._store.register_file(relative_path, FileSignature(relative_path, digest, mtime, ec_id))
 
 
 async def do_refresh(store: ArchiveStore, args: RebuildRefreshArgs):

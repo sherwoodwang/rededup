@@ -244,6 +244,7 @@ class ImportProcessor:
                     if source_signature is not None:
                         # Create signature with the target EC ID
                         new_signature = FileSignature(
+                            transformed_path,
                             source_signature.digest,
                             source_signature.mtime_ns,
                             target_ec_id

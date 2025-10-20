@@ -30,9 +30,9 @@ class SymlinkFollowingTest(unittest.TestCase):
                     indexed_files = []
                     for line in archive.inspect():
                         if line.startswith('file-metadata'):
-                            # Extract path from line
+                            # Extract path from line: file-metadata path_hash:{hash} {path} ...
                             parts = line.split()
-                            indexed_files.append(parts[1])
+                            indexed_files.append(parts[2])
 
                     self.assertIn('real_dir/file1.txt', indexed_files)
                     # linked_dir should appear as a file (symlink), not as a directory
@@ -71,8 +71,9 @@ followed_symlinks = ["parent/linked_dir"]
                     indexed_files = []
                     for line in archive.inspect():
                         if line.startswith('file-metadata'):
+                            # Extract path from line: file-metadata path_hash:{hash} {path} ...
                             parts = line.split()
-                            indexed_files.append(parts[1])
+                            indexed_files.append(parts[2])
 
                     # Files should be indexed through the symlink path
                     self.assertIn('parent/linked_dir/file1.txt', indexed_files)
@@ -114,8 +115,9 @@ followed_symlinks = ["link1"]
                     indexed_files = []
                     for line in archive.inspect():
                         if line.startswith('file-metadata'):
+                            # Extract path from line: file-metadata path_hash:{hash} {path} ...
                             parts = line.split()
-                            indexed_files.append(parts[1])
+                            indexed_files.append(parts[2])
 
                     # link1 should be followed (configured in settings, points outside archive)
                     self.assertIn('link1/file1.txt', indexed_files)
@@ -163,8 +165,9 @@ followed_symlinks = ["link1"]
                     indexed_files = []
                     for line in archive.inspect():
                         if line.startswith('file-metadata'):
+                            # Extract path from line: file-metadata path_hash:{hash} {path} ...
                             parts = line.split()
-                            indexed_files.append(parts[1])
+                            indexed_files.append(parts[2])
 
                     # Regular file should be indexed
                     self.assertIn('regular_file.txt', indexed_files)

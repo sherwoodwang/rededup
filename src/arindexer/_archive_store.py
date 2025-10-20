@@ -14,6 +14,7 @@ class FileSignature:
     """File metadata signature for content tracking.
 
     Attributes:
+        path: File path relative to archive root
         digest: Content digest (hash) of the file
         mtime_ns: File modification time in nanoseconds since epoch
         ec_id: Equivalence Class ID - identifies which EC class this file belongs to
@@ -27,7 +28,8 @@ class FileSignature:
           (hash collision case)
     """
 
-    def __init__(self, digest: bytes, mtime_ns: int | None, ec_id: int | None):
+    def __init__(self, path: Path, digest: bytes, mtime_ns: int | None, ec_id: int | None):
+        self.path = path
         self.digest = digest
         self.mtime_ns = mtime_ns
         self.ec_id = ec_id
@@ -205,20 +207,38 @@ class ArchiveStore:
         return value
 
     def register_file(self, path, signature: FileSignature) -> None:
-        """Store file signature in m: prefixed database entry.
+        """Store file signature in 's:' prefixed database entry.
+
+        Uses a 128-bit Murmur3 hash of the path as the key, with the path stored
+        as part of the value for collision handling.
 
         Args:
             path: Relative path from archive root
-            signature: File metadata including digest, mtime_ns, and ec_id
+            signature: File metadata including path, digest, mtime_ns, and ec_id
+
+        Notes:
+            - Key format: <16-byte path hash>
+            - Value format: msgpack([path_components, digest, mtime_ns, ec_id])
+            - If multiple paths hash to the same key, the last write wins (very unlikely with 128-bit hash)
         """
+        path_hash = self._compute_long_path_hash(path)
+        path_components = [str(part) for part in path.parts]
         self._file_signature_database.put(
-            b'\0'.join((str(part).encode() for part in path.parts)),
-            msgpack.dumps([signature.digest, signature.mtime_ns, signature.ec_id])
+            path_hash,
+            msgpack.dumps([path_components, signature.digest, signature.mtime_ns, signature.ec_id])
         )
 
     def deregister_file(self, path):
-        """Remove file signature entry from database."""
-        self._file_signature_database.delete(b'\0'.join((str(part).encode() for part in path.parts)))
+        """Remove file signature entry from database.
+
+        Args:
+            path: Relative path from archive root
+
+        Notes:
+            - Uses 128-bit Murmur3 hash of the path as the key
+        """
+        path_hash = self._compute_long_path_hash(path)
+        self._file_signature_database.delete(path_hash)
 
     def lookup_file(self, path) -> FileSignature | None:
         """Retrieve stored file signature by path.
@@ -228,19 +248,35 @@ class ArchiveStore:
 
         Returns:
             FileSignature if found, None otherwise
+
+        Notes:
+            - Uses 128-bit Murmur3 hash of the path as the key
+            - Returns FileSignature with path field populated from stored value
         """
-        value = self._file_signature_database.get(b'\0'.join((str(part).encode() for part in path.parts)))
+        path_hash = self._compute_long_path_hash(path)
+        value = self._file_signature_database.get(path_hash)
 
         if value is None:
             return None
 
-        return FileSignature(*msgpack.loads(value))
+        # Unpack: [path_components, digest, mtime_ns, ec_id]
+        data = msgpack.loads(value)
+        stored_path = Path(*data[0])
+        return FileSignature(stored_path, data[1], data[2], data[3])
 
     def list_registered_files(self) -> Iterator[tuple[Path, FileSignature]]:
-        """Iterate all file signature entries, yielding (path, signature) pairs."""
+        """Iterate all file signature entries, yielding (path, signature) pairs.
+
+        Notes:
+            - Iterates through hash-based keys
+            - Path is extracted from the stored value
+            - Returns FileSignature with path field populated
+        """
         for key, value in self._file_signature_database.iterator():
-            path = Path(*[part.decode() for part in key.split(b'\0')])
-            signature = FileSignature(*msgpack.loads(value))
+            # Unpack: [path_components, digest, mtime_ns, ec_id]
+            data = msgpack.loads(value)
+            path = Path(*data[0])
+            signature = FileSignature(path, data[1], data[2], data[3])
             yield path, signature
 
     @staticmethod
@@ -254,10 +290,27 @@ class ArchiveStore:
             32-bit unsigned integer hash value
         """
         # Convert path to string with consistent separator
-        path_str = '/'.join(str(part) for part in path.parts)
+        path_str = '\0'.join(str(part) for part in path.parts)
         # mmh3.hash returns signed 32-bit, convert to unsigned
         hash_value = mmh3.hash(path_str, signed=False)
         return hash_value
+
+    @staticmethod
+    def _compute_long_path_hash(path: Path) -> bytes:
+        """Compute 128-bit Murmur3 hash for a path.
+
+        Args:
+            path: File path to hash
+
+        Returns:
+            16 bytes representing the 128-bit hash value
+        """
+        # Convert path to string with consistent separator
+        path_str = '\0'.join(str(part) for part in path.parts)
+        # mmh3.hash128 returns a 128-bit hash as bytes
+        hash_value = mmh3.hash128(path_str, signed=False)
+        # Convert the integer to 16 bytes (big-endian)
+        return hash_value.to_bytes(16, 'big')
 
     @staticmethod
     def _encode_varint(value: int) -> bytes:
@@ -694,13 +747,19 @@ class ArchiveStore:
                     yield f'file-hash *{hex_digest_and_rest} {value}'
             elif key.startswith(ArchiveStore.__FILE_SIGNATURE_PREFIX):
                 from datetime import datetime, timezone
-                path = Path(*[part.decode() for part in key[len(ArchiveStore.__FILE_SIGNATURE_PREFIX):].split(b'\0')])
-                [digest, mtime, ec_id] = msgpack.loads(value)
-                quoted_path = '/'.join((urllib.parse.quote_plus(part) for part in path.parts))
+                # Key is 16-byte path hash
+                path_hash_hex = key[len(ArchiveStore.__FILE_SIGNATURE_PREFIX):].hex()
+                # Value: [path_components, digest, mtime_ns, ec_id]
+                data = msgpack.loads(value)
+                path_components = data[0]
+                digest = data[1]
+                mtime = data[2]
+                ec_id = data[3]
+                quoted_path = '/'.join((urllib.parse.quote_plus(part) for part in path_components))
                 hex_digest = digest.hex()
                 mtime_string = \
                     datetime.fromtimestamp(mtime / 1000000000, timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-                yield f'file-metadata {quoted_path} digest:{hex_digest} mtime:{mtime_string} ec_id:{ec_id}'
+                yield f'file-metadata path_hash:{path_hash_hex} {quoted_path} digest:{hex_digest} mtime:{mtime_string} ec_id:{ec_id}'
             else:
                 yield f'OTHER {key} {value}'
 
