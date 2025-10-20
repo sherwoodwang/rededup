@@ -6,8 +6,8 @@ import mmh3
 import msgpack
 import plyvel
 
-from ._walker import FileContext, WalkPolicy, walk_with_policy, resolve_symlink_target
-from ._archive_settings import ArchiveSettings, SETTING_FOLLOWED_SYMLINKS
+from ..utils.walker import FileContext, WalkPolicy, walk_with_policy, resolve_symlink_target
+from .archive_settings import ArchiveSettings, SETTING_FOLLOWED_SYMLINKS
 
 
 class FileSignature:

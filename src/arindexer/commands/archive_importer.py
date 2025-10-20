@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import NamedTuple
 
-from ._archive_store import ArchiveStore, FileSignature
+from ..store.archive_store import ArchiveStore, FileSignature
 
 
 class ImportArgs(NamedTuple):
@@ -64,7 +64,7 @@ class ImportProcessor:
             ValueError: If path traverses through a symlink
         """
         # Get symlink following configuration from the containing archive (current)
-        from ._archive_settings import ArchiveSettings, SETTING_FOLLOWED_SYMLINKS
+        from ..store.archive_settings import ArchiveSettings, SETTING_FOLLOWED_SYMLINKS
         settings = ArchiveSettings(base_path)
         follow_list = settings.get(SETTING_FOLLOWED_SYMLINKS, [])
         symlinks_to_follow: set[Path] = set()
@@ -132,7 +132,7 @@ class ImportProcessor:
 
     def _open_source_archive(self):
         """Open the source archive store."""
-        from ._archive_settings import ArchiveSettings
+        from ..store.archive_settings import ArchiveSettings
         try:
             source_settings = ArchiveSettings(self.source_path)
             self.source_store = ArchiveStore(source_settings, self.source_path, create=False)

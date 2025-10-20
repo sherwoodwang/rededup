@@ -2,11 +2,11 @@ from asyncio import TaskGroup
 from pathlib import Path
 from typing import NamedTuple, Callable, Awaitable
 
-from ._keyed_lock import KeyedLock
-from ._walker import FileContext
-from ._throttler import Throttler
-from ._archive_store import ArchiveStore, FileSignature
-from ._processor import Processor
+from ..utils.keyed_lock import KeyedLock
+from ..utils.walker import FileContext
+from ..utils.throttler import Throttler
+from ..store.archive_store import ArchiveStore, FileSignature
+from ..utils.processor import Processor
 
 
 class RebuildRefreshArgs(NamedTuple):

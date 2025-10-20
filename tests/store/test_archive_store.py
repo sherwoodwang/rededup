@@ -12,8 +12,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer._archive_settings import ArchiveSettings
-from arindexer._archive_store import ArchiveStore
+from arindexer.store.archive_settings import ArchiveSettings
+from arindexer.store.archive_store import ArchiveStore
 
 
 class InterceptedArchiveStore(ArchiveStore):

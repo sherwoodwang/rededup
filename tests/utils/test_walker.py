@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer._walker import (
+from arindexer.utils.walker import (
     FileContext,
     WalkPolicy,
     walk_with_policy,

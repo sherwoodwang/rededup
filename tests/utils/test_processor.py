@@ -4,8 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# noinspection PyProtectedMember
-from arindexer._processor import Processor
+from arindexer.utils.processor import Processor
 
 
 class ProcessorTest(unittest.TestCase):

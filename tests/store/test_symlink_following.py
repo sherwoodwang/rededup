@@ -3,8 +3,7 @@ import unittest
 from pathlib import Path
 
 from arindexer import Archive
-# noinspection PyProtectedMember
-from arindexer._processor import Processor
+from arindexer.utils.processor import Processor
 
 
 class SymlinkFollowingTest(unittest.TestCase):

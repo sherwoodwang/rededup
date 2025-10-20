@@ -9,9 +9,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Awaitable, TypeAlias, NamedTuple
 
-from ._processor import Processor, FileMetadataDifference, FileMetadataDifferenceType
-from ._throttler import Throttler
-from ._archive_store import ArchiveStore
+from ..utils.processor import Processor, FileMetadataDifference, FileMetadataDifferenceType
+from ..utils.throttler import Throttler
+from ..store.archive_store import ArchiveStore
 
 
 class FileMetadataDifferencePattern:

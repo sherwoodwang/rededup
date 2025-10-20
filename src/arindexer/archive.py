@@ -3,18 +3,18 @@ import os
 from pathlib import Path
 from typing import Iterator, Callable, Awaitable
 
-from ._processor import Processor
-from ._archive_store import ArchiveStore
-from ._archive_settings import ArchiveSettings
-from ._duplicate_finder import (
+from .utils.processor import Processor
+from .store.archive_store import ArchiveStore
+from .store.archive_settings import ArchiveSettings
+from .commands.duplicate_finder import (
     do_find_duplicates,
     FindDuplicatesArgs,
     FileMetadataDifferencePattern,
     Output,
     StandardOutput
 )
-from ._rebuild_refresh import do_rebuild, do_refresh, RebuildRefreshArgs
-from ._archive_importer import do_import, ImportArgs
+from .commands.rebuild_refresh import do_rebuild, do_refresh, RebuildRefreshArgs
+from .commands.archive_importer import do_import, ImportArgs
 
 
 class Archive:
