@@ -209,24 +209,52 @@ class ArchiveStore:
     def register_file(self, path, signature: FileSignature) -> None:
         """Store file signature in 's:' prefixed database entry.
 
-        Uses a 128-bit Murmur3 hash of the path as the key, with the path stored
-        as part of the value for collision handling.
+        Uses a 128-bit Murmur3 hash of the path as a prefix, with sequence numbers
+        to handle hash collisions robustly.
 
         Args:
             path: Relative path from archive root
             signature: File metadata including path, digest, mtime_ns, and ec_id
 
         Notes:
-            - Key format: <16-byte path hash>
+            - Key format: <16-byte path hash><varint sequence number>
             - Value format: msgpack([path_components, digest, mtime_ns, ec_id])
-            - If multiple paths hash to the same key, the last write wins (very unlikely with 128-bit hash)
+            - Multiple paths with the same hash are stored with different sequence numbers
+            - If path already exists, it's updated in place
         """
         path_hash = self._compute_long_path_hash(path)
         path_components = [str(part) for part in path.parts]
-        self._file_signature_database.put(
-            path_hash,
-            msgpack.dumps([path_components, signature.digest, signature.mtime_ns, signature.ec_id])
-        )
+
+        # Create prefixed database for this hash
+        hash_db = self._file_signature_database.prefixed_db(path_hash)
+
+        # Scan existing sequence numbers to check if path already exists
+        next_seq_num = 0
+        found_existing = False
+        for key, data in hash_db.iterator():
+            # Key here is just the varint sequence number (hash prefix is already stripped)
+            seq_num, _ = self._decode_varint(key, 0)
+            next_seq_num = max(next_seq_num, seq_num + 1)
+
+            # Check if this is the same path
+            existing_data: list[Any] = msgpack.loads(data)
+            existing_path = Path(*existing_data[0])
+            if existing_path == path:
+                # Update existing entry
+                hash_db.put(
+                    key,
+                    msgpack.dumps([path_components, signature.digest, signature.mtime_ns, signature.ec_id])
+                )
+                found_existing = True
+                break
+
+        # If path doesn't exist, insert with new sequence number
+        if not found_existing:
+            seq_num_bytes = self._encode_varint(next_seq_num)
+            hash_db.put(
+                seq_num_bytes,
+                msgpack.dumps([path_components, signature.digest, signature.mtime_ns, signature.ec_id])
+            )
 
     def deregister_file(self, path):
         """Remove file signature entry from database.
@@ -235,10 +263,22 @@ class ArchiveStore:
             path: Relative path from archive root
 
         Notes:
-            - Uses 128-bit Murmur3 hash of the path as the key
+            - Uses 128-bit Murmur3 hash of the path as a prefix
+            - Searches through sequence numbers to find and remove matching path
         """
         path_hash = self._compute_long_path_hash(path)
-        self._file_signature_database.delete(path_hash)
+        hash_db = self._file_signature_database.prefixed_db(path_hash)
+
+        # Search for the specific path entry and delete it
+        for key, data in hash_db.iterator():
+            # Unpack: [path_components, digest, mtime_ns, ec_id]
+            stored_data: list[Any] = msgpack.loads(data)
+            stored_path = Path(*stored_data[0])
+
+            # Check if this is the path we're looking for
+            if stored_path == path:
+                hash_db.delete(key)
+                return
 
     def lookup_file(self, path) -> FileSignature | None:
         """Retrieve stored file signature by path.
@@ -250,27 +290,33 @@ class ArchiveStore:
             FileSignature if found, None otherwise
 
         Notes:
-            - Uses 128-bit Murmur3 hash of the path as the key
+            - Uses 128-bit Murmur3 hash of the path as a prefix
+            - Searches through sequence numbers to find matching path
             - Returns FileSignature with path field populated from stored value
         """
         path_hash = self._compute_long_path_hash(path)
-        value = self._file_signature_database.get(path_hash)
+        hash_db = self._file_signature_database.prefixed_db(path_hash)
 
-        if value is None:
-            return None
+        # Search through all entries for this hash
+        for key, data in hash_db.iterator():
+            # Unpack: [path_components, digest, mtime_ns, ec_id]
+            stored_data: list[Any] = msgpack.loads(data)
+            stored_path = Path(*stored_data[0])
 
-        # Unpack: [path_components, digest, mtime_ns, ec_id]
-        data = msgpack.loads(value)
-        stored_path = Path(*data[0])
-        return FileSignature(stored_path, data[1], data[2], data[3])
+            # Check if this is the path we're looking for
+            if stored_path == path:
+                return FileSignature(stored_path, stored_data[1], stored_data[2], stored_data[3])
+
+        return None
 
     def list_registered_files(self) -> Iterator[tuple[Path, FileSignature]]:
         """Iterate all file signature entries, yielding (path, signature) pairs.
 
         Notes:
-            - Iterates through hash-based keys
+            - Iterates through hash-based keys with sequence numbers
             - Path is extracted from the stored value
             - Returns FileSignature with path field populated
+            - Multiple paths with the same hash are stored with different sequence numbers
         """
         for key, value in self._file_signature_database.iterator():
             # Unpack: [path_components, digest, mtime_ns, ec_id]
@@ -747,8 +793,15 @@ class ArchiveStore:
                     yield f'file-hash *{hex_digest_and_rest} {value}'
             elif key.startswith(ArchiveStore.__FILE_SIGNATURE_PREFIX):
                 from datetime import datetime, timezone
-                # Key is 16-byte path hash
-                path_hash_hex = key[len(ArchiveStore.__FILE_SIGNATURE_PREFIX):].hex()
+                # Key format: <16-byte path hash><varint sequence number>
+                sig_key = key[len(ArchiveStore.__FILE_SIGNATURE_PREFIX):]
+                # Extract path hash (first 16 bytes)
+                path_hash_hex = sig_key[:16].hex()
+                # Decode sequence number from remaining bytes
+                if len(sig_key) > 16:
+                    seq_num, _ = ArchiveStore._decode_varint(sig_key, 16)
+                else:
+                    seq_num = 0  # Fallback for malformed data
                 # Value: [path_components, digest, mtime_ns, ec_id]
                 data = msgpack.loads(value)
                 path_components = data[0]
@@ -759,7 +812,7 @@ class ArchiveStore:
                 hex_digest = digest.hex()
                 mtime_string = \
                     datetime.fromtimestamp(mtime / 1000000000, timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-                yield f'file-metadata path_hash:{path_hash_hex} {quoted_path} digest:{hex_digest} mtime:{mtime_string} ec_id:{ec_id}'
+                yield f'file-metadata path_hash:{path_hash_hex} seq:{seq_num} {quoted_path} digest:{hex_digest} mtime:{mtime_string} ec_id:{ec_id}'
             else:
                 yield f'OTHER {key} {value}'
 

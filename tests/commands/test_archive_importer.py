@@ -45,8 +45,8 @@ class ImportTest(unittest.TestCase):
                         if line.startswith('file-metadata'):
                             parts = line.split()
                             # URL decode the path
-                            # Extract path from line: file-metadata path_hash:{hash} {path} ...
-                            path = urllib.parse.unquote_plus(parts[2])
+                            # Extract path from line: file-metadata path_hash:{hash} seq:{seq} {path} ...
+                            path = urllib.parse.unquote_plus(parts[3])
                             indexed_files.append(path)
 
                     self.assertIn('subdir/nested_archive/file1.txt', indexed_files)
@@ -85,8 +85,8 @@ class ImportTest(unittest.TestCase):
                         if line.startswith('file-metadata'):
                             parts = line.split()
                             # URL decode the path
-                            # Extract path from line: file-metadata path_hash:{hash} {path} ...
-                            path = urllib.parse.unquote_plus(parts[2])
+                            # Extract path from line: file-metadata path_hash:{hash} seq:{seq} {path} ...
+                            path = urllib.parse.unquote_plus(parts[3])
                             indexed_files.append(path)
 
                     # Should have the nested file with prefix removed
@@ -173,8 +173,8 @@ class ImportTest(unittest.TestCase):
                     for line in parent_archive.inspect():
                         if line.startswith('file-metadata'):
                             parts = line.split()
-                            # Extract path from line: file-metadata path_hash:{hash} {path} ...
-                            path = urllib.parse.unquote_plus(parts[2])
+                            # Extract path from line: file-metadata path_hash:{hash} seq:{seq} {path} ...
+                            path = urllib.parse.unquote_plus(parts[3])
                             # Extract EC ID from the line
                             ec_id_match = re.search(r'ec_id:(\d+)', line)
                             if ec_id_match:
@@ -230,8 +230,8 @@ class ImportTest(unittest.TestCase):
                     for line in parent_archive.inspect():
                         if line.startswith('file-metadata'):
                             parts = line.split()
-                            # Extract path from line: file-metadata path_hash:{hash} {path} ...
-                            path = urllib.parse.unquote_plus(parts[2])
+                            # Extract path from line: file-metadata path_hash:{hash} seq:{seq} {path} ...
+                            path = urllib.parse.unquote_plus(parts[3])
                             digest_match = re.search(r'digest:([0-9a-f]+)', line)
                             ec_id_match = re.search(r'ec_id:(\d+)', line)
                             if digest_match and ec_id_match:
@@ -297,8 +297,8 @@ class ImportTest(unittest.TestCase):
                     for line in parent_archive.inspect():
                         if line.startswith('file-metadata'):
                             parts = line.split()
-                            # Extract path from line: file-metadata path_hash:{hash} {path} ...
-                            path = urllib.parse.unquote_plus(parts[2])
+                            # Extract path from line: file-metadata path_hash:{hash} seq:{seq} {path} ...
+                            path = urllib.parse.unquote_plus(parts[3])
                             digest_match = re.search(r'digest:([0-9a-f]+)', line)
                             ec_id_match = re.search(r'ec_id:(\d+)', line)
                             if digest_match and ec_id_match:
@@ -403,8 +403,8 @@ class ImportTest(unittest.TestCase):
                     for line in parent_archive.inspect():
                         if line.startswith('file-metadata'):
                             parts = line.split()
-                            # Extract path from line: file-metadata path_hash:{hash} {path} ...
-                            path = urllib.parse.unquote_plus(parts[2])
+                            # Extract path from line: file-metadata path_hash:{hash} seq:{seq} {path} ...
+                            path = urllib.parse.unquote_plus(parts[3])
                             indexed_files.append(path)
 
                     self.assertIn('symlink_dir/nested_archive/file.txt', indexed_files)

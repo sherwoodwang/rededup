@@ -31,7 +31,7 @@ class SymlinkFollowingTest(unittest.TestCase):
                         if line.startswith('file-metadata'):
                             # Extract path from line: file-metadata path_hash:{hash} {path} ...
                             parts = line.split()
-                            indexed_files.append(parts[2])
+                            indexed_files.append(parts[3])
 
                     self.assertIn('real_dir/file1.txt', indexed_files)
                     # linked_dir should appear as a file (symlink), not as a directory
@@ -72,7 +72,7 @@ followed_symlinks = ["parent/linked_dir"]
                         if line.startswith('file-metadata'):
                             # Extract path from line: file-metadata path_hash:{hash} {path} ...
                             parts = line.split()
-                            indexed_files.append(parts[2])
+                            indexed_files.append(parts[3])
 
                     # Files should be indexed through the symlink path
                     self.assertIn('parent/linked_dir/file1.txt', indexed_files)
@@ -116,7 +116,7 @@ followed_symlinks = ["link1"]
                         if line.startswith('file-metadata'):
                             # Extract path from line: file-metadata path_hash:{hash} {path} ...
                             parts = line.split()
-                            indexed_files.append(parts[2])
+                            indexed_files.append(parts[3])
 
                     # link1 should be followed (configured in settings, points outside archive)
                     self.assertIn('link1/file1.txt', indexed_files)
@@ -166,7 +166,7 @@ followed_symlinks = ["link1"]
                         if line.startswith('file-metadata'):
                             # Extract path from line: file-metadata path_hash:{hash} {path} ...
                             parts = line.split()
-                            indexed_files.append(parts[2])
+                            indexed_files.append(parts[3])
 
                     # Regular file should be indexed
                     self.assertIn('regular_file.txt', indexed_files)
