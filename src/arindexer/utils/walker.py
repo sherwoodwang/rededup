@@ -5,6 +5,16 @@ from typing import Any, Generator, Iterator, NamedTuple, Callable
 
 
 class FileContext:
+    """Context object for a file or directory during traversal.
+
+    IMPORTANT: The _path attribute is protected and should not be accessed directly
+    outside of this class. To get the full path of a file, concatenate the archive/root
+    path with the relative_path() instead:
+        full_path = archive_path / context.relative_path()
+
+    The _path attribute is used internally for stat() operations when stat info
+    is not pre-computed.
+    """
     def __init__(self, parent, name: str | None, path: Path | None = None, st: os.stat_result | None = None):
         self._parent: FileContext | None = parent
         self._name: str | None = name

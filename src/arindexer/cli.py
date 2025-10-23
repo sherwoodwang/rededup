@@ -98,6 +98,45 @@ def archive_indexer():
         help='Files or directories to check for duplicates against the archive')
     parser_find_duplicates.set_defaults(method=_find_duplicates, create=False)
 
+    parser_analyze = subparsers.add_parser(
+        'analyze',
+        help='Generate analysis reports for files or directories',
+        description='Analyzes the specified paths against the archive and generates persistent reports '
+                    'in .report directories. Each report includes duplicate detection results.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent('''
+            Examples:
+              arindexer analyze /home/user/documents
+              arindexer analyze /path/to/file1.txt /path/to/dir2
+
+            Each input path will get its own report directory:
+              /home/user/documents.report/
+              /path/to/file1.txt.report/
+              /path/to/dir2.report/
+            ''').strip())
+    parser_analyze.add_argument(
+        'paths',
+        nargs='+',
+        metavar='PATH',
+        help='Files or directories to analyze against the archive')
+    parser_analyze.add_argument(
+        '--include-atime',
+        action='store_true',
+        help='Include access time (atime) when determining if files are identical (default: excluded)')
+    parser_analyze.add_argument(
+        '--exclude-ctime',
+        action='store_true',
+        help='Exclude change time (ctime) when determining if files are identical (default: included)')
+    parser_analyze.add_argument(
+        '--exclude-owner',
+        action='store_true',
+        help='Exclude file owner (UID) when determining if files are identical (default: included)')
+    parser_analyze.add_argument(
+        '--exclude-group',
+        action='store_true',
+        help='Exclude file group (GID) when determining if files are identical (default: included)')
+    parser_analyze.set_defaults(method=_analyze, create=False)
+
     parser_inspect = subparsers.add_parser(
         'inspect',
         help='Inspect and display archive records',
@@ -164,6 +203,24 @@ def _find_duplicates(archive: Archive, output: StandardOutput, args):
             archive.find_duplicates(Path(file_or_directory), ignore=diffptn)
     finally:
         output.showing_content_wise_duplicates = saved_showing_content_wise_duplicates
+
+
+def _analyze(archive: Archive, output: StandardOutput, args):
+    from .commands.analyzer import DuplicateMatchRule
+
+    paths = [Path(p) for p in args.paths]
+
+    # Build comparison rule from command-line arguments
+    comparison_rule = DuplicateMatchRule(
+        include_mtime=True,  # Always included
+        include_atime=args.include_atime,  # Default: False
+        include_ctime=not args.exclude_ctime,  # Default: True
+        include_mode=True,  # Always included
+        include_owner=not args.exclude_owner,  # Default: True
+        include_group=not args.exclude_group  # Default: True
+    )
+
+    archive.analyze(paths, comparison_rule)
 
 
 def _inspect(archive: Archive, output: StandardOutput, args):

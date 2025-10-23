@@ -99,5 +99,7 @@ class RefreshProcessor:
 
 async def do_refresh(store: ArchiveStore, args: RebuildRefreshArgs):
     """Async implementation of refresh operation with optional hash algorithm override."""
+    # Ensure archive ID exists (generate if needed, before refresh)
+    store.ensure_archive_id()
     processor = RefreshProcessor(store, args)
     await processor.run()

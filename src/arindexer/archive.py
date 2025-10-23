@@ -15,6 +15,7 @@ from .commands.duplicate_finder import (
 )
 from .commands.rebuild_refresh import do_rebuild, do_refresh, RebuildRefreshArgs
 from .commands.archive_importer import do_import, ImportArgs
+from .commands.analyzer import do_analyze, AnalyzeArgs
 
 
 class Archive:
@@ -155,6 +156,47 @@ class Archive:
                 self._get_hash_algorithm(),
                 input,
                 ignore
+            )
+        ))
+
+    def analyze(self, input_paths: list[Path], comparison_rule: 'DuplicateMatchRule | None' = None):
+        """Generate analysis reports for input paths against the archive.
+
+        Creates a .report directory for each input path containing:
+        - manifest.json: Report metadata including archive path, ID, and timestamp
+        - .dup files: Lists of duplicate file paths for each analyzed file
+
+        Args:
+            input_paths: List of files or directories to analyze
+            comparison_rule: Optional rule defining which metadata must match for identity.
+                           If None, uses default rule (atime excluded, all else included).
+
+        Each input path gets its own report directory (e.g., path/to/file.report)
+        containing the analysis results and a manifest that references this archive
+        with a validation identifier.
+
+        Raises:
+            RuntimeError: If archive ID is not set (archive needs refresh/rebuild)
+            FileExistsError: If a file exists at the report directory path
+        """
+        archive_id = self._store.get_archive_id()
+        if archive_id is None:
+            raise RuntimeError("Archive ID not set. Please rebuild or refresh the archive first.")
+
+        from .commands.analyzer import DuplicateMatchRule
+
+        if comparison_rule is None:
+            comparison_rule = DuplicateMatchRule()  # Use default rule (atime excluded)
+
+        asyncio.run(do_analyze(
+            self._store,
+            AnalyzeArgs(
+                self._processor,
+                input_paths,
+                self._get_hash_algorithm(),
+                archive_id,
+                self._store.archive_path,
+                comparison_rule
             )
         ))
 

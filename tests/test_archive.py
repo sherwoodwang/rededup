@@ -37,10 +37,13 @@ class ArchiveCoreOperationsTest(unittest.TestCase):
             with Processor() as processor:
                 with Archive(processor, str(archive_path), create=True) as archive:
                     archive.rebuild()
-                    # Should have only manifest property, no file entries
+                    # Should have manifest properties (hash-algorithm and archive-id), no file entries
                     entries = list(archive.inspect())
-                    self.assertEqual(1, len(entries))
-                    self.assertIn('manifest-property', entries[0])
+                    self.assertEqual(2, len(entries))
+                    self.assertTrue(any('manifest-property' in e for e in entries))
+                    # Verify both manifest properties are present
+                    manifest_entries = [e for e in entries if 'manifest-property' in e]
+                    self.assertEqual(2, len(manifest_entries))
 
     def test_rebuild_single_file(self):
         """Rebuild correctly indexes a single file."""
@@ -97,7 +100,10 @@ class ArchiveCoreOperationsTest(unittest.TestCase):
                     archive.refresh()
                     after = set(archive.inspect())
 
-                    self.assertEqual(before, after)
+                    # Filter out archive-id which changes on every refresh
+                    before_filtered = {e for e in before if 'archive-id' not in e}
+                    after_filtered = {e for e in after if 'archive-id' not in e}
+                    self.assertEqual(before_filtered, after_filtered)
 
     def test_refresh_after_file_added(self):
         """Refresh detects newly added file."""

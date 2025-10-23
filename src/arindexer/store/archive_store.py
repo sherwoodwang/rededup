@@ -6,6 +6,7 @@ import mmh3
 import msgpack
 import plyvel
 
+from ..utils.varint import encode_varint, decode_varint
 from ..utils.walker import FileContext, WalkPolicy, walk_with_policy, resolve_symlink_target
 from .archive_settings import ArchiveSettings, SETTING_FOLLOWED_SYMLINKS
 
@@ -91,6 +92,7 @@ class ArchiveStore:
 
     MANIFEST_HASH_ALGORITHM = 'hash-algorithm'
     MANIFEST_PENDING_ACTION = 'truncating'
+    MANIFEST_ARCHIVE_ID = 'archive-id'
 
     def __init__(self, settings: ArchiveSettings, archive_path: Path, create: bool = False):
         """Initialize raw archive with LevelDB database.
@@ -206,6 +208,36 @@ class ArchiveStore:
 
         return value
 
+    def ensure_archive_id(self) -> str:
+        """Ensure archive ID exists in manifest, generating if needed.
+
+        This is an atomic operation that checks for existence and generates
+        a new ID only if one doesn't already exist.
+
+        Returns:
+            The archive ID (existing or newly generated)
+        """
+        import uuid
+
+        key = ArchiveStore.MANIFEST_ARCHIVE_ID.encode()
+        existing = self._manifest_database.get(key)
+
+        if existing is not None:
+            return existing.decode()
+
+        # Generate new ID and store it
+        archive_id = str(uuid.uuid4())
+        self._manifest_database.put(key, archive_id.encode())
+        return archive_id
+
+    def get_archive_id(self) -> str | None:
+        """Get the current archive identifier from the manifest.
+
+        Returns:
+            The archive ID, or None if not set
+        """
+        return self.read_manifest(ArchiveStore.MANIFEST_ARCHIVE_ID)
+
     def register_file(self, path, signature: FileSignature) -> None:
         """Store file signature in 's:' prefixed database entry.
 
@@ -233,7 +265,7 @@ class ArchiveStore:
         found_existing = False
         for key, data in hash_db.iterator():
             # Key here is just the varint sequence number (hash prefix is already stripped)
-            seq_num, _ = self._decode_varint(key, 0)
+            seq_num, _ = decode_varint(key, 0)
             next_seq_num = max(next_seq_num, seq_num + 1)
 
             # Check if this is the same path
@@ -250,7 +282,7 @@ class ArchiveStore:
 
         # If path doesn't exist, insert with new sequence number
         if not found_existing:
-            seq_num_bytes = self._encode_varint(next_seq_num)
+            seq_num_bytes = encode_varint(next_seq_num)
             hash_db.put(
                 seq_num_bytes,
                 msgpack.dumps([path_components, signature.digest, signature.mtime_ns, signature.ec_id])
@@ -359,205 +391,6 @@ class ArchiveStore:
         return hash_value.to_bytes(16, 'big')
 
     @staticmethod
-    def _encode_varint(value: int) -> bytes:
-        """Encode an integer as variable-length bytes (UTF-8 style).
-
-        Supports values from 0 to 2^63-1 (63-bit integers).
-
-        Encoding format:
-        - 0 to 127 (2^7-1): 1 byte - 0xxxxxxx
-        - 128 to 16383 (2^14-1): 2 bytes - 10xxxxxx xxxxxxxx
-        - 16384 to 2097151 (2^21-1): 3 bytes - 110xxxxx xxxxxxxx xxxxxxxx
-        - ... up to 9 bytes for 63-bit values
-
-        Args:
-            value: Non-negative integer to encode (max 2^63-1)
-
-        Returns:
-            Variable-length byte encoding
-
-        Raises:
-            ValueError: If value is negative or exceeds 2^63-1
-        """
-        if value < 0:
-            raise ValueError(f"Cannot encode negative value: {value}")
-        if value >= (1 << 63):
-            raise ValueError(f"Value {value} exceeds maximum (2^63-1)")
-
-        # Determine how many bytes we need
-        if value < (1 << 7):
-            # 1 byte: 0xxxxxxx
-            return bytes([value])
-        elif value < (1 << 14):
-            # 2 bytes: 10xxxxxx xxxxxxxx
-            return bytes([
-                0b10000000 | (value >> 8),
-                value & 0xFF
-            ])
-        elif value < (1 << 21):
-            # 3 bytes: 110xxxxx xxxxxxxx xxxxxxxx
-            return bytes([
-                0b11000000 | (value >> 16),
-                (value >> 8) & 0xFF,
-                value & 0xFF
-            ])
-        elif value < (1 << 28):
-            # 4 bytes: 1110xxxx xxxxxxxx xxxxxxxx xxxxxxxx
-            return bytes([
-                0b11100000 | (value >> 24),
-                (value >> 16) & 0xFF,
-                (value >> 8) & 0xFF,
-                value & 0xFF
-            ])
-        elif value < (1 << 35):
-            # 5 bytes
-            return bytes([
-                0b11110000 | (value >> 32),
-                (value >> 24) & 0xFF,
-                (value >> 16) & 0xFF,
-                (value >> 8) & 0xFF,
-                value & 0xFF
-            ])
-        elif value < (1 << 42):
-            # 6 bytes
-            return bytes([
-                0b11111000 | (value >> 40),
-                (value >> 32) & 0xFF,
-                (value >> 24) & 0xFF,
-                (value >> 16) & 0xFF,
-                (value >> 8) & 0xFF,
-                value & 0xFF
-            ])
-        elif value < (1 << 49):
-            # 7 bytes
-            return bytes([
-                0b11111100 | (value >> 48),
-                (value >> 40) & 0xFF,
-                (value >> 32) & 0xFF,
-                (value >> 24) & 0xFF,
-                (value >> 16) & 0xFF,
-                (value >> 8) & 0xFF,
-                value & 0xFF
-            ])
-        elif value < (1 << 56):
-            # 8 bytes
-            return bytes([
-                0b11111110,
-                (value >> 48) & 0xFF,
-                (value >> 40) & 0xFF,
-                (value >> 32) & 0xFF,
-                (value >> 24) & 0xFF,
-                (value >> 16) & 0xFF,
-                (value >> 8) & 0xFF,
-                value & 0xFF
-            ])
-        else:
-            # 9 bytes (for values up to 2^63-1)
-            return bytes([
-                0b11111111,
-                (value >> 56) & 0xFF,
-                (value >> 48) & 0xFF,
-                (value >> 40) & 0xFF,
-                (value >> 32) & 0xFF,
-                (value >> 24) & 0xFF,
-                (value >> 16) & 0xFF,
-                (value >> 8) & 0xFF,
-                value & 0xFF
-            ])
-
-    @staticmethod
-    def _decode_varint(data: bytes, offset: int = 0) -> tuple[int, int]:
-        """Decode a variable-length integer from bytes.
-
-        Args:
-            data: Byte array containing the encoded value
-            offset: Starting position in data (default 0)
-
-        Returns:
-            Tuple of (decoded_value, bytes_consumed)
-
-        Raises:
-            ValueError: If data is invalid or truncated
-        """
-        if offset >= len(data):
-            raise ValueError("Cannot decode varint from empty data")
-
-        first_byte = data[offset]
-
-        # 1 byte: 0xxxxxxx
-        if (first_byte & 0b10000000) == 0:
-            return first_byte, 1
-
-        # 2 bytes: 10xxxxxx xxxxxxxx
-        if (first_byte & 0b11000000) == 0b10000000:
-            if offset + 2 > len(data):
-                raise ValueError("Truncated varint encoding (expected 2 bytes)")
-            value = ((first_byte & 0b00111111) << 8) | data[offset + 1]
-            return value, 2
-
-        # 3 bytes: 110xxxxx xxxxxxxx xxxxxxxx
-        if (first_byte & 0b11100000) == 0b11000000:
-            if offset + 3 > len(data):
-                raise ValueError("Truncated varint encoding (expected 3 bytes)")
-            value = ((first_byte & 0b00011111) << 16) | (data[offset + 1] << 8) | data[offset + 2]
-            return value, 3
-
-        # 4 bytes: 1110xxxx xxxxxxxx xxxxxxxx xxxxxxxx
-        if (first_byte & 0b11110000) == 0b11100000:
-            if offset + 4 > len(data):
-                raise ValueError("Truncated varint encoding (expected 4 bytes)")
-            value = ((first_byte & 0b00001111) << 24) | (data[offset + 1] << 16) | \
-                    (data[offset + 2] << 8) | data[offset + 3]
-            return value, 4
-
-        # 5 bytes: 11110xxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx
-        if (first_byte & 0b11111000) == 0b11110000:
-            if offset + 5 > len(data):
-                raise ValueError("Truncated varint encoding (expected 5 bytes)")
-            value = ((first_byte & 0b00000111) << 32) | (data[offset + 1] << 24) | \
-                    (data[offset + 2] << 16) | (data[offset + 3] << 8) | data[offset + 4]
-            return value, 5
-
-        # 6 bytes: 111110xx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx
-        if (first_byte & 0b11111100) == 0b11111000:
-            if offset + 6 > len(data):
-                raise ValueError("Truncated varint encoding (expected 6 bytes)")
-            value = ((first_byte & 0b00000011) << 40) | (data[offset + 1] << 32) | \
-                    (data[offset + 2] << 24) | (data[offset + 3] << 16) | \
-                    (data[offset + 4] << 8) | data[offset + 5]
-            return value, 6
-
-        # 7 bytes: 1111110x xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx
-        if (first_byte & 0b11111110) == 0b11111100:
-            if offset + 7 > len(data):
-                raise ValueError("Truncated varint encoding (expected 7 bytes)")
-            value = ((first_byte & 0b00000001) << 48) | (data[offset + 1] << 40) | \
-                    (data[offset + 2] << 32) | (data[offset + 3] << 24) | \
-                    (data[offset + 4] << 16) | (data[offset + 5] << 8) | data[offset + 6]
-            return value, 7
-
-        # 8 bytes: 11111110 xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx
-        if first_byte == 0b11111110:
-            if offset + 8 > len(data):
-                raise ValueError("Truncated varint encoding (expected 8 bytes)")
-            value = (data[offset + 1] << 48) | (data[offset + 2] << 40) | \
-                    (data[offset + 3] << 32) | (data[offset + 4] << 24) | \
-                    (data[offset + 5] << 16) | (data[offset + 6] << 8) | data[offset + 7]
-            return value, 8
-
-        # 9 bytes: 11111111 xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx
-        if first_byte == 0b11111111:
-            if offset + 9 > len(data):
-                raise ValueError("Truncated varint encoding (expected 9 bytes)")
-            value = (data[offset + 1] << 56) | (data[offset + 2] << 48) | \
-                    (data[offset + 3] << 40) | (data[offset + 4] << 32) | \
-                    (data[offset + 5] << 24) | (data[offset + 6] << 16) | \
-                    (data[offset + 7] << 8) | data[offset + 8]
-            return value, 9
-
-        raise ValueError(f"Invalid varint encoding at offset {offset}")
-
-    @staticmethod
     def _make_ec_path_key(digest: bytes, ec_id: int, path_hash: int, seq_num: int) -> bytes:
         """Create a database key for a path in an EC class.
 
@@ -575,7 +408,7 @@ class ArchiveStore:
         return (digest +
                 ec_id.to_bytes(4, 'big') +
                 path_hash.to_bytes(4, 'big') +
-                ArchiveStore._encode_varint(seq_num))
+                encode_varint(seq_num))
 
     @staticmethod
     def _parse_ec_path_key(key: bytes, digest_len: int) -> tuple[bytes, int, int, int]:
@@ -591,7 +424,7 @@ class ArchiveStore:
         digest = key[:digest_len]
         ec_id = int.from_bytes(key[digest_len:digest_len + 4], 'big')
         path_hash = int.from_bytes(key[digest_len + 4:digest_len + 8], 'big')
-        seq_num, _ = ArchiveStore._decode_varint(key, digest_len + 8)
+        seq_num, _ = decode_varint(key, digest_len + 8)
         return digest, ec_id, path_hash, seq_num
 
     def list_content_equivalent_classes(self, digest: bytes) -> Iterable[tuple[int, list[Path]]]:
@@ -685,7 +518,7 @@ class ArchiveStore:
             next_seq_num = 0
             for key, data in hash_db.iterator():
                 # Key here is just the varint sequence number (hash prefix is already stripped)
-                seq_num, _ = self._decode_varint(key, 0)
+                seq_num, _ = decode_varint(key, 0)
                 next_seq_num = max(next_seq_num, seq_num + 1)
 
                 # Check if this path is already stored
@@ -696,7 +529,7 @@ class ArchiveStore:
             # Insert remaining paths with sequential sequence numbers
             for path in paths_to_insert:
                 path_data = msgpack.dumps([str(part) for part in path.parts])
-                seq_num_bytes = self._encode_varint(next_seq_num)
+                seq_num_bytes = encode_varint(next_seq_num)
                 hash_db.put(seq_num_bytes, path_data)
                 next_seq_num += 1
 
@@ -782,7 +615,7 @@ class ArchiveStore:
                     # Parse ec_id, path_hash, seq_num
                     ec_id = int.from_bytes(digest_and_rest[hash_length:hash_length+4], 'big')
                     path_hash_bytes = digest_and_rest[hash_length+4:hash_length+8]
-                    seq_num, _ = ArchiveStore._decode_varint(digest_and_rest, hash_length+8)
+                    seq_num, _ = decode_varint(digest_and_rest, hash_length+8)
                     path_components: list[str] = msgpack.loads(value)
                     path = '/'.join((urllib.parse.quote_plus(part) for part in path_components))
                     hex_digest = digest.hex()
@@ -799,7 +632,7 @@ class ArchiveStore:
                 path_hash_hex = sig_key[:16].hex()
                 # Decode sequence number from remaining bytes
                 if len(sig_key) > 16:
-                    seq_num, _ = ArchiveStore._decode_varint(sig_key, 16)
+                    seq_num, _ = decode_varint(sig_key, 16)
                 else:
                     seq_num = 0  # Fallback for malformed data
                 # Value: [path_components, digest, mtime_ns, ec_id]
