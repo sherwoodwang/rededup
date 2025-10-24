@@ -18,7 +18,10 @@ from arindexer.commands.analyzer import (
     DuplicateMatch,
     DuplicateRecord,
     ReportWriter,
-    ReportManifest
+    ReportReader,
+    ReportManifest,
+    find_report_for_path,
+    get_report_directory_path
 )
 from arindexer.utils.processor import Processor
 
@@ -241,32 +244,17 @@ class ReportWriterTest(unittest.TestCase):
 
                 writer.write_duplicate_record(record)
 
-            # Verify it was written by reading the database directly
-            db = plyvel.DB(str(report_dir / 'database'))
-            try:
-                # Compute the same path hash
-                import mmh3
-                path_str = '\0'.join(str(part) for part in Path('target/file.txt').parts)
-                path_hash = mmh3.hash128(path_str.encode('utf-8'), signed=False).to_bytes(16, byteorder='big')
+            # Verify it was written using ReportReader
+            with ReportReader(report_dir) as reader:
+                retrieved = reader.read_duplicate_record(Path('target/file.txt'))
 
-                prefixed_db = db.prefixed_db(path_hash)
-                found_record = False
-
-                for key, value in prefixed_db.iterator():
-                    retrieved = DuplicateRecord.from_msgpack(value)
-                    if retrieved.path == Path('target/file.txt'):
-                        found_record = True
-                        self.assertEqual(100, retrieved.duplicated_size)
-                        self.assertEqual(1, len(retrieved.duplicates))
-                        path, comp = retrieved.duplicates[0]
-                        self.assertEqual(Path('archive/file.txt'), path)
-                        self.assertTrue(comp.is_identical)
-                        self.assertEqual(1, comp.duplicated_items)
-                        break
-
-                self.assertTrue(found_record, "Record not found in database")
-            finally:
-                db.close()
+                self.assertIsNotNone(retrieved, "Record not found in database")
+                self.assertEqual(100, retrieved.duplicated_size)
+                self.assertEqual(1, len(retrieved.duplicates))
+                path, comp = retrieved.duplicates[0]
+                self.assertEqual(Path('archive/file.txt'), path)
+                self.assertTrue(comp.is_identical)
+                self.assertEqual(1, comp.duplicated_items)
 
     def test_update_existing_record(self):
         """Update an existing record in the database."""
@@ -297,26 +285,17 @@ class ReportWriterTest(unittest.TestCase):
                 )
                 writer.write_duplicate_record(record2)
 
-            # Verify the record was updated
-            db = plyvel.DB(str(report_dir / 'database'))
-            try:
-                import mmh3
-                path_str = '\0'.join(str(part) for part in Path('file.txt').parts)
-                path_hash = mmh3.hash128(path_str.encode('utf-8'), signed=False).to_bytes(16, byteorder='big')
+            # Verify the record was updated using ReportReader
+            with ReportReader(report_dir) as reader:
+                retrieved = reader.read_duplicate_record(Path('file.txt'))
 
-                prefixed_db = db.prefixed_db(path_hash)
-                count = 0
-                for key, value in prefixed_db.iterator():
-                    retrieved = DuplicateRecord.from_msgpack(value)
-                    if retrieved.path == Path('file.txt'):
-                        count += 1
-                        self.assertEqual(100, retrieved.duplicated_size)
-                        self.assertEqual(2, len(retrieved.duplicates))
+                self.assertIsNotNone(retrieved)
+                self.assertEqual(100, retrieved.duplicated_size)
+                self.assertEqual(2, len(retrieved.duplicates))
 
-                # Should only have one entry for this path
-                self.assertEqual(1, count)
-            finally:
-                db.close()
+                # Verify we can iterate and find only one record for this path
+                count = sum(1 for r in reader.iterate_all_records() if r.path == Path('file.txt'))
+                self.assertEqual(1, count, "Should only have one entry for this path")
 
     def test_multiple_records_different_paths(self):
         """Write multiple records with different paths."""
@@ -335,24 +314,18 @@ class ReportWriterTest(unittest.TestCase):
                     record = DuplicateRecord(Path(f'file{i}.txt'), [(Path(f'dup{i}.txt'), comp)], 100, 100)
                     writer.write_duplicate_record(record)
 
-            # Verify all records exist
-            db = plyvel.DB(str(report_dir / 'database'))
-            try:
-                all_records = []
-                for key, value in db.iterator():
-                    # Skip path hash prefix to get to actual records
-                    if len(key) == 16:
-                        continue
-                    try:
-                        record = DuplicateRecord.from_msgpack(value)
-                        all_records.append(record.path)
-                    except:
-                        pass
+            # Verify all records exist using ReportReader
+            with ReportReader(report_dir) as reader:
+                all_records = list(reader.iterate_all_records())
 
                 # We should have exactly 3 records
-                self.assertGreaterEqual(len(all_records), 3)
-            finally:
-                db.close()
+                self.assertEqual(3, len(all_records))
+
+                # Verify each expected path is present
+                paths = {str(r.path) for r in all_records}
+                self.assertIn('file0.txt', paths)
+                self.assertIn('file1.txt', paths)
+                self.assertIn('file2.txt', paths)
 
 
 class FileAnalysisTest(unittest.TestCase):
@@ -1173,6 +1146,276 @@ class DirectoryAnalysisTest(unittest.TestCase):
                 self.assertTrue(found_dir_record, "Directory with nested subdirectories not found")
             finally:
                 db.close()
+
+
+class ReportReaderTest(unittest.TestCase):
+    """Tests for ReportReader class."""
+
+    def test_read_duplicate_record(self):
+        """Test reading a duplicate record from database."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir) / '.report'
+
+            # Write a record using ReportWriter
+            with ReportWriter(report_dir) as writer:
+                writer.create_report_directory()
+
+                comparison = DuplicateMatch(
+                    Path('archive/file.txt'),
+                    mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
+                    duplicated_size=100, duplicated_items=1,
+                    is_identical=True, is_superset=True
+                )
+                record = DuplicateRecord(
+                    Path('target/file.txt'),
+                    [(Path('archive/file.txt'), comparison)],
+                    100, 100
+                )
+                writer.write_duplicate_record(record)
+
+            # Read it back using ReportReader
+            with ReportReader(report_dir) as reader:
+                retrieved = reader.read_duplicate_record(Path('target/file.txt'))
+
+                self.assertIsNotNone(retrieved)
+                self.assertEqual(Path('target/file.txt'), retrieved.path)
+                self.assertEqual(100, retrieved.duplicated_size)
+                self.assertEqual(1, len(retrieved.duplicates))
+
+                path, comp = retrieved.duplicates[0]
+                self.assertEqual(Path('archive/file.txt'), path)
+                self.assertTrue(comp.is_identical)
+                self.assertEqual(1, comp.duplicated_items)
+
+    def test_read_nonexistent_record(self):
+        """Test reading a record that doesn't exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir) / '.report'
+
+            with ReportWriter(report_dir) as writer:
+                writer.create_report_directory()
+
+            with ReportReader(report_dir) as reader:
+                retrieved = reader.read_duplicate_record(Path('nonexistent/file.txt'))
+                self.assertIsNone(retrieved)
+
+    def test_iterate_all_records(self):
+        """Test iterating through all records in database."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir) / '.report'
+
+            # Write multiple records
+            with ReportWriter(report_dir) as writer:
+                writer.create_report_directory()
+
+                for i in range(3):
+                    comp = DuplicateMatch(
+                        Path(f'dup{i}.txt'),
+                        mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
+                        duplicated_size=100, duplicated_items=1,
+                        is_identical=True, is_superset=True
+                    )
+                    record = DuplicateRecord(
+                        Path(f'file{i}.txt'),
+                        [(Path(f'dup{i}.txt'), comp)],
+                        100, 100
+                    )
+                    writer.write_duplicate_record(record)
+
+            # Iterate and verify
+            with ReportReader(report_dir) as reader:
+                records = list(reader.iterate_all_records())
+                self.assertEqual(3, len(records))
+
+                paths = {str(r.path) for r in records}
+                self.assertIn('file0.txt', paths)
+                self.assertIn('file1.txt', paths)
+                self.assertIn('file2.txt', paths)
+
+    def test_read_manifest(self):
+        """Test reading manifest from report."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir) / '.report'
+
+            # Write manifest
+            manifest = ReportManifest(
+                archive_path='/path/to/archive',
+                archive_id='test-archive-id',
+                timestamp='2024-01-01T00:00:00'
+            )
+
+            writer = ReportWriter(report_dir)
+            writer.create_report_directory()
+            writer.write_manifest(manifest)
+
+            # Read it back
+            reader = ReportReader(report_dir)
+            retrieved = reader.read_manifest()
+
+            self.assertEqual('/path/to/archive', retrieved.archive_path)
+            self.assertEqual('test-archive-id', retrieved.archive_id)
+            self.assertEqual('2024-01-01T00:00:00', retrieved.timestamp)
+
+
+class FindReportTest(unittest.TestCase):
+    """Tests for find_report_for_path function."""
+
+    def test_find_report_for_exact_path(self):
+        """Test finding report for the exact analyzed path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            report_dir = Path(str(target_path) + '.report')
+            report_dir.mkdir()
+
+            analyzed_path = find_report_for_path(target_path)
+
+            self.assertIsNotNone(analyzed_path)
+            self.assertEqual(target_path.resolve(), analyzed_path)
+
+    def test_find_report_for_child_file(self):
+        """Test finding report for a file inside analyzed directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            child_file = target_path / 'file.txt'
+            child_file.write_text('test')
+
+            report_dir = Path(str(target_path) + '.report')
+            report_dir.mkdir()
+
+            analyzed_path = find_report_for_path(child_file)
+
+            self.assertIsNotNone(analyzed_path)
+            self.assertEqual(target_path.resolve(), analyzed_path)
+
+    def test_find_report_for_nested_file(self):
+        """Test finding report for a deeply nested file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            subdir = target_path / 'subdir' / 'deep'
+            subdir.mkdir(parents=True)
+            nested_file = subdir / 'file.txt'
+            nested_file.write_text('test')
+
+            report_dir = Path(str(target_path) + '.report')
+            report_dir.mkdir()
+
+            analyzed_path = find_report_for_path(nested_file)
+
+            self.assertIsNotNone(analyzed_path)
+            self.assertEqual(target_path.resolve(), analyzed_path)
+
+    def test_find_report_not_found(self):
+        """Test when no report exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+
+            analyzed_path = find_report_for_path(target_path)
+
+            self.assertIsNone(analyzed_path)
+
+    def test_find_report_closest_parent(self):
+        """Test that find_report_for_path finds the closest parent report."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create outer directory with report
+            outer = Path(tmpdir) / 'outer'
+            outer.mkdir()
+            outer_report = Path(str(outer) + '.report')
+            outer_report.mkdir()
+
+            # Create nested directory without report
+            inner = outer / 'inner'
+            inner.mkdir()
+            file_in_inner = inner / 'file.txt'
+            file_in_inner.write_text('test')
+
+            analyzed_path = find_report_for_path(file_in_inner)
+
+            self.assertIsNotNone(analyzed_path)
+            # Should find the outer analyzed path
+            self.assertEqual(outer.resolve(), analyzed_path)
+
+
+class DescribeIntegrationTest(unittest.TestCase):
+    """Integration tests for describe functionality."""
+
+    def test_describe_file_with_duplicates(self):
+        """Test describing a file that has duplicates in archive."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_file = archive_path / 'original.txt'
+            archive_file.write_bytes(b'test content')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_file = target_path / 'duplicate.txt'
+            target_file.write_bytes(b'test content')
+            copy_times(archive_file, target_file)
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_path])
+
+            # Use ReportReader to verify the report
+            report_dir = get_report_directory_path(target_path)
+            with ReportReader(report_dir) as reader:
+                # Read the record for the duplicate file
+                record = reader.read_duplicate_record(Path('target') / 'duplicate.txt')
+
+                self.assertIsNotNone(record)
+                self.assertEqual(1, len(record.duplicates))
+                path, comparison = record.duplicates[0]
+                self.assertEqual(Path('original.txt'), path)
+                self.assertTrue(comparison.is_identical)
+
+    def test_describe_directory_with_children(self):
+        """Test describing a directory with child files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'mydir'
+            archive_dir.mkdir()
+            (archive_dir / 'file1.txt').write_bytes(b'content1')
+            (archive_dir / 'file2.txt').write_bytes(b'content2')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_dir = target_path / 'duplicate_dir'
+            target_dir.mkdir()
+            file1 = target_dir / 'file1.txt'
+            file1.write_bytes(b'content1')
+            copy_times(archive_dir / 'file1.txt', file1)
+            file2 = target_dir / 'file2.txt'
+            file2.write_bytes(b'content2')
+            copy_times(archive_dir / 'file2.txt', file2)
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_dir])
+
+            # Use ReportReader to verify directory report
+            report_dir = get_report_directory_path(target_dir)
+            with ReportReader(report_dir) as reader:
+                # Read directory record
+                dir_record = reader.read_duplicate_record(Path('duplicate_dir'))
+
+                self.assertIsNotNone(dir_record)
+                self.assertEqual(1, len(dir_record.duplicates))
+                self.assertTrue(dir_record.duplicates[0][1].is_identical)
+
+                # Iterate to find child files
+                child_records = []
+                for record in reader.iterate_all_records():
+                    if record.path.parent == Path('duplicate_dir'):
+                        child_records.append(record)
+
+                self.assertEqual(2, len(child_records))
 
 
 if __name__ == '__main__':

@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import stat
-from abc import ABC
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -282,7 +282,8 @@ class DuplicateRecord:
         duplicates: list[tuple[Path, DuplicateMatch]] = []
 
         for dup_data in duplicate_data:
-            dup_path_components, mtime_match, atime_match, ctime_match, mode_match, owner_match, group_match, dup_duplicated_size, duplicated_items, is_identical, is_superset = dup_data
+            dup_path_components, mtime_match, atime_match, ctime_match, mode_match, owner_match, group_match, \
+                dup_duplicated_size, duplicated_items, is_identical, is_superset = dup_data
             dup_path = Path(*dup_path_components)
             comparison = DuplicateMatch(
                 dup_path,
@@ -367,6 +368,98 @@ class ReportManifest:
     def from_dict(cls, data: dict[str, Any]) -> 'ReportManifest':
         """Load manifest from dictionary."""
         return cls(**data)
+
+
+class ReportReader:
+    """Handles reading analysis reports from .report directories with LevelDB storage."""
+
+    def __init__(self, report_dir: Path) -> None:
+        """Initialize report reader.
+
+        Args:
+            report_dir: Path to .report directory where report is stored
+        """
+        self.report_dir: Path = report_dir
+        self.manifest_path: Path = report_dir / 'manifest.json'
+        self.database_path: Path = report_dir / 'database'
+        self._database: plyvel.DB | None = None
+
+    def open_database(self) -> None:
+        """Open the LevelDB database for reading duplicate records."""
+        if not self.database_path.exists():
+            raise FileNotFoundError(f"Database directory not found: {self.database_path}")
+        self._database = plyvel.DB(str(self.database_path), create_if_missing=False)
+
+    def close_database(self) -> None:
+        """Close the LevelDB database."""
+        if self._database is not None:
+            self._database.close()
+            self._database = None
+
+    def __enter__(self) -> 'ReportReader':
+        """Context manager entry."""
+        self.open_database()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Context manager exit."""
+        self.close_database()
+
+    def read_duplicate_record(self, path: Path) -> DuplicateRecord | None:
+        """Read a duplicate record from the database by path.
+
+        Args:
+            path: Path to look up (relative to the analyzed target, including target's base name)
+
+        Returns:
+            DuplicateRecord if found, None otherwise
+        """
+        if self._database is None:
+            raise RuntimeError("Database not opened. Use context manager or call open_database().")
+
+        path_hash = ReportWriter._compute_path_hash(path)
+        prefixed_db = self._database.prefixed_db(path_hash)
+
+        # Iterate through all records with this hash prefix
+        for key, value in prefixed_db.iterator():
+            record = DuplicateRecord.from_msgpack(value)
+            if record.path == path:
+                return record
+
+        return None
+
+    def iterate_all_records(self):
+        """Iterate through all duplicate records in the database.
+
+        Yields:
+            DuplicateRecord instances for all records in the database
+        """
+        if self._database is None:
+            raise RuntimeError("Database not opened. Use context manager or call open_database().")
+
+        for key, value in self._database.iterator():
+            # Skip keys that are just hash prefixes without varint sequence numbers
+            # Valid keys have format: <16-byte hash><varint sequence>
+            if len(key) > 16:
+                try:
+                    record = DuplicateRecord.from_msgpack(value)
+                    yield record
+                except Exception:
+                    # Skip invalid records
+                    continue
+
+    def read_manifest(self) -> ReportManifest:
+        """Read existing report manifest.
+
+        Returns:
+            The report manifest loaded from manifest.json
+
+        Raises:
+            FileNotFoundError: If manifest.json doesn't exist
+        """
+        with open(self.manifest_path, 'r') as f:
+            data = json.load(f)
+        return ReportManifest.from_dict(data)
 
 
 class ReportWriter:
@@ -1144,3 +1237,265 @@ def get_report_directory_path(input_path: Path) -> Path:
     # For /path/to/file.txt -> /path/to/file.txt.report
     # For /path/to/dir -> /path/to/dir.report
     return Path(str(input_path) + '.report')
+
+
+def find_report_for_path(target_path: Path) -> Path | None:
+    """Find the analyzed path for a given file or directory.
+
+    Searches upward from the target path to find a .report directory that contains
+    analysis data for the target.
+
+    Args:
+        target_path: The file or directory to find a report for
+
+    Returns:
+        Path that was analyzed (e.g., /path/to/dir for /path/to/dir.report) if found, None otherwise
+    """
+    target_path = target_path.resolve()
+
+    # Start from the target path and traverse upward
+    current = target_path
+    while True:
+        # Check if there's a .report directory for the current path
+        report_dir = get_report_directory_path(current)
+        if report_dir.exists() and report_dir.is_dir():
+            return current
+
+        # Move to parent directory
+        parent = current.parent
+        if parent == current:
+            # Reached root without finding a report
+            return None
+        current = parent
+
+
+def format_size(size_bytes: int) -> str:
+    """Format byte size in human-readable format.
+
+    Args:
+        size_bytes: Size in bytes
+
+    Returns:
+        Human-readable size string (e.g., "1.5 MB")
+    """
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size_bytes < 1024.0:
+            if unit == 'B':
+                return f"{size_bytes} {unit}"
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.2f} PB"
+
+
+def do_describe(target_path: Path) -> None:
+    """Describe duplicate information for a file or directory from analysis reports.
+
+    Args:
+        target_path: Path to the file or directory to describe
+    """
+    # Resolve target path
+    target_path = target_path.resolve()
+
+    # Check if target exists
+    if not target_path.exists():
+        print(f"Error: Path does not exist: {target_path}")
+        return
+
+    # Find report directory
+    analyzed_path = find_report_for_path(target_path)
+    if analyzed_path is None:
+        print(f"No analysis report found for: {target_path}")
+        print(f"Run 'arindexer analyze {target_path}' to generate a report.")
+        return
+
+    report_dir = get_report_directory_path(analyzed_path)
+
+    # Read report
+    try:
+        with ReportReader(report_dir) as reader:
+            manifest = reader.read_manifest()
+
+            # Show report metadata
+            print(f"Report: {report_dir}")
+            print(f"Analyzed: {analyzed_path}")
+            print(f"Archive: {manifest.archive_path}")
+            print(f"Timestamp: {manifest.timestamp}")
+            print()
+
+            # Calculate relative path within the analyzed directory
+            if target_path == analyzed_path:
+                # Target is the analyzed path itself
+                relative_path = Path(analyzed_path.name)
+            else:
+                # Target is inside the analyzed path
+                relative_path = Path(analyzed_path.name) / target_path.relative_to(analyzed_path)
+
+            # Check if target is a directory and create appropriate formatter
+            if target_path.is_dir():
+                formatter = DirectoryDescribeFormatter(reader, relative_path, manifest)
+            else:
+                formatter = FileDescribeFormatter(reader, relative_path, manifest)
+
+            # Execute the describe operation
+            formatter.describe()
+
+    except FileNotFoundError as e:
+        print(f"Error reading report: {e}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+
+class DescribeFormatter(ABC):
+    """Base class for formatting describe output using template pattern."""
+
+    def __init__(self, reader: ReportReader, relative_path: Path, manifest: ReportManifest):
+        """Initialize formatter.
+
+        Args:
+            reader: ReportReader instance with open database
+            relative_path: Path relative to the analyzed target
+            manifest: Report manifest
+        """
+        self.reader = reader
+        self.relative_path = relative_path
+        self.manifest = manifest
+
+    def describe(self) -> None:
+        """Template method that describes the item."""
+        record = self.reader.read_duplicate_record(self.relative_path)
+
+        if record is None or not record.duplicates:
+            print(f"No duplicates found for: {self.relative_path}")
+            return
+
+        # Print unified header
+        self._print_header(record)
+
+        # Print unified duplicates section
+        self._print_duplicates(record)
+
+        # Print additional details (only for directories)
+        self._print_details(record)
+
+    def _print_header(self, record: DuplicateRecord) -> None:
+        """Print header information for the item.
+
+        Args:
+            record: DuplicateRecord for the item
+        """
+        item_type = self._get_item_type()
+        print(f"{item_type}: {self.relative_path}")
+        print(f"Size: {format_size(record.total_size)}")
+        print(f"Duplicated size: {format_size(record.duplicated_size)}")
+        print(f"Duplicates: {len(record.duplicates)}")
+        print()
+
+    @abstractmethod
+    def _get_item_type(self) -> str:
+        """Get the item type string (e.g., 'File' or 'Directory').
+
+        Returns:
+            String describing the item type
+        """
+        pass
+
+    def _print_duplicates(self, record: DuplicateRecord) -> None:
+        """Print duplicate information for the item.
+
+        Args:
+            record: DuplicateRecord for the item
+        """
+        for dup_path, comparison in record.duplicates:
+            print(f"  {dup_path}")
+
+            # Show status
+            if comparison.is_identical:
+                print(f"    Status: Identical")
+            else:
+                print(f"    Status: Content match (metadata differs)")
+
+                # Show metadata matches for non-identical items
+                matches = []
+                if comparison.mtime_match:
+                    matches.append("mtime")
+                if comparison.atime_match:
+                    matches.append("atime")
+                if comparison.ctime_match:
+                    matches.append("ctime")
+                if comparison.mode_match:
+                    matches.append("mode")
+                if comparison.owner_match:
+                    matches.append("owner")
+                if comparison.group_match:
+                    matches.append("group")
+
+                if matches:
+                    print(f"    Matching: {', '.join(matches)}")
+
+            # Show size and items if relevant (non-zero)
+            if comparison.duplicated_items > 0:
+                print(f"    Duplicated items: {comparison.duplicated_items}")
+            if comparison.duplicated_size > 0:
+                print(f"    Duplicated size: {format_size(comparison.duplicated_size)}")
+
+    def _print_details(self, record: DuplicateRecord) -> None:
+        """Print additional details for the item.
+
+        Default implementation does nothing. Subclasses can override.
+
+        Args:
+            record: DuplicateRecord for the item
+        """
+        pass
+
+
+class FileDescribeFormatter(DescribeFormatter):
+    """Formatter for describing files."""
+
+    def _get_item_type(self) -> str:
+        """Get the item type string."""
+        return "File"
+
+
+class DirectoryDescribeFormatter(DescribeFormatter):
+    """Formatter for describing directories."""
+
+    def _get_item_type(self) -> str:
+        """Get the item type string."""
+        return "Directory"
+
+    def _print_details(self, record: DuplicateRecord) -> None:
+        """Print child files information."""
+        print()
+        print("Files in directory:")
+        print()
+
+        # Collect all records under this directory
+        child_records = []
+        for child_record in self.reader.iterate_all_records():
+            # Check if this record is a direct child of the directory
+            try:
+                if child_record.path.parent == self.relative_path:
+                    child_records.append(child_record)
+            except (ValueError, OSError):
+                continue
+
+        if not child_records:
+            print("  No files found in report for this directory")
+            return
+
+        # Sort by path
+        child_records.sort(key=lambda r: str(r.path))
+
+        # Display each child
+        for child_record in child_records:
+            file_name = child_record.path.name
+            if child_record.duplicates:
+                print(f"  {file_name}")
+                print(f"    Total size: {format_size(child_record.total_size)}")
+                print(f"    Duplicated size: {format_size(child_record.duplicated_size)}")
+                print(f"    Duplicates: {len(child_record.duplicates)}")
+            else:
+                print(f"  {file_name}")
+                print(f"    Total size: {format_size(child_record.total_size)}")
+                print(f"    No duplicates")

@@ -1,10 +1,37 @@
 import argparse
 import os
 import textwrap
+from functools import wraps
 from pathlib import Path
 
 from . import Archive, Processor, FileMetadataDifferencePattern, FileMetadataDifferenceType, StandardOutput, \
     ArchiveIndexNotFound
+
+
+def needs_archive(func):
+    """Decorator for commands that need the archive to be loaded.
+
+    The decorated function will receive (archive, output, args).
+    The wrapper function takes (load_archive_fn, output, args) and creates Processor and calls load_archive_fn.
+    """
+    @wraps(func)
+    def wrapper(load_archive_fn, output, args):
+        with Processor() as processor:
+            with load_archive_fn(processor) as archive:
+                return func(archive, output, args)
+    return wrapper
+
+
+def no_archive(func):
+    """Decorator for commands that don't need the archive.
+
+    The decorated function will receive (output, args).
+    The wrapper function takes (load_archive_fn, output, args) but doesn't call load_archive_fn or create Processor.
+    """
+    @wraps(func)
+    def wrapper(load_archive_fn, output, args):
+        return func(output, args)
+    return wrapper
 
 
 def archive_indexer():
@@ -41,14 +68,14 @@ def archive_indexer():
         help='Completely rebuild the archive index from scratch',
         description='Rebuilds the entire archive index by scanning all files and computing their hashes. This '
                     'operation will overwrite any existing index.')
-    parser_rebuild.set_defaults(method=lambda a, _1, _2: a.rebuild(), create=True)
+    parser_rebuild.set_defaults(method=_rebuild, create=True)
 
     parser_refresh = subparsers.add_parser(
         'refresh',
         help='Refresh the archive index with any changes',
         description='Updates the archive index by scanning for new, modified, or deleted files. More efficient than '
                     'rebuild for incremental updates.')
-    parser_refresh.set_defaults(method=lambda a, _1, _2: a.refresh(), create=True)
+    parser_refresh.set_defaults(method=_refresh, create=True)
 
     parser_import = subparsers.add_parser(
         'import',
@@ -137,6 +164,26 @@ def archive_indexer():
         help='Exclude file group (GID) when determining if files are identical (default: included)')
     parser_analyze.set_defaults(method=_analyze, create=False)
 
+    parser_describe = subparsers.add_parser(
+        'describe',
+        help='Show duplicate information from existing analysis reports',
+        description='Displays duplicate information for a file or directory from existing .report directories. '
+                    'Searches upward from the specified path to find relevant reports.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent('''
+            Examples:
+              arindexer describe /home/user/documents/file.txt
+              arindexer describe /home/user/documents
+
+            For files: Shows list of duplicates found in the archive.
+            For directories: Shows summary of duplicated files with sizes.
+            ''').strip())
+    parser_describe.add_argument(
+        'path',
+        metavar='PATH',
+        help='File or directory to describe from analysis reports')
+    parser_describe.set_defaults(method=_describe, create=False)
+
     parser_inspect = subparsers.add_parser(
         'inspect',
         help='Inspect and display archive records',
@@ -177,11 +224,23 @@ def archive_indexer():
         else:
             return Archive(processor, archive_path, output=output)
 
-    with Processor() as processor:
-        with load_archive(processor) as archive:
-            args.method(archive, output, args)
+    # Call the method with load_archive function
+    # The @needs_archive decorator will create Processor and load the archive
+    # The @no_archive decorator will skip both Processor and archive loading
+    args.method(load_archive, output, args)
 
 
+@needs_archive
+def _rebuild(archive: Archive, output: StandardOutput, args):
+    archive.rebuild()
+
+
+@needs_archive
+def _refresh(archive: Archive, output: StandardOutput, args):
+    archive.refresh()
+
+
+@needs_archive
 def _find_duplicates(archive: Archive, output: StandardOutput, args):
     diffptn = FileMetadataDifferencePattern()
     if args.ignore:
@@ -205,6 +264,7 @@ def _find_duplicates(archive: Archive, output: StandardOutput, args):
         output.showing_content_wise_duplicates = saved_showing_content_wise_duplicates
 
 
+@needs_archive
 def _analyze(archive: Archive, output: StandardOutput, args):
     from .commands.analyzer import DuplicateMatchRule
 
@@ -223,11 +283,21 @@ def _analyze(archive: Archive, output: StandardOutput, args):
     archive.analyze(paths, comparison_rule)
 
 
+@no_archive
+def _describe(output: StandardOutput, args):
+    from .commands.analyzer import do_describe
+
+    path = Path(args.path)
+    do_describe(path)
+
+
+@needs_archive
 def _inspect(archive: Archive, output: StandardOutput, args):
     for record in archive.inspect():
         print(record)
 
 
+@needs_archive
 def _import_index(archive: Archive, output: StandardOutput, args):
     archive.import_index(args.source_archive)
 
