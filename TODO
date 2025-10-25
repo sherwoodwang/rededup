@@ -1,8 +1,9 @@
-handle missing files in the archive
 add logs to track progress
-recover atime if necessary
-add forced refresh, ignoring mtime
+handle missing files in the archive
 graceful interrupting
-use 0 as separators
 handle errors from another process
-handle directories
+handle trailing slashes in symbolic links
+add commands to change settings
+add forced refresh, ignoring mtime
+recover atime if necessary
+handle BrokenPipeError with print()

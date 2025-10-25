@@ -1,11 +1,13 @@
 import urllib.parse
 from pathlib import Path
+from threading import Lock
 from typing import Iterator, Iterable, Any
 
 import mmh3
 import msgpack
 import plyvel
 
+from ..utils.keyed_lock import KeyedLock
 from ..utils.varint import encode_varint, decode_varint
 from ..utils.walker import FileContext, WalkPolicy, walk_with_policy, resolve_symlink_target
 from .archive_settings import ArchiveSettings, SETTING_FOLLOWED_SYMLINKS
@@ -145,6 +147,11 @@ class ArchiveStore:
         self._file_signature_database = file_signature_database
         self._settings = settings
 
+        # Concurrency control for database operations
+        self._ec_prefix_lock = KeyedLock()  # For EC class operations
+        self._path_hash_lock = KeyedLock()  # For file signature operations
+        self._manifest_lock = Lock()  # For manifest operations (e.g., ensure_archive_id)
+
     def __del__(self):
         """Destructor ensures database is closed."""
         self.close()
@@ -211,6 +218,9 @@ class ArchiveStore:
     def ensure_archive_id(self) -> str:
         """Ensure archive ID exists in manifest, generating if needed.
 
+        Thread-safe: Uses a lock to prevent race conditions where multiple threads
+        might simultaneously check for the archive ID and generate different IDs.
+
         This is an atomic operation that checks for existence and generates
         a new ID only if one doesn't already exist.
 
@@ -220,15 +230,18 @@ class ArchiveStore:
         import uuid
 
         key = ArchiveStore.MANIFEST_ARCHIVE_ID.encode()
-        existing = self._manifest_database.get(key)
 
-        if existing is not None:
-            return existing.decode()
+        # Acquire lock to ensure atomicity of check-and-set operation
+        with self._manifest_lock:
+            existing = self._manifest_database.get(key)
 
-        # Generate new ID and store it
-        archive_id = str(uuid.uuid4())
-        self._manifest_database.put(key, archive_id.encode())
-        return archive_id
+            if existing is not None:
+                return existing.decode()
+
+            # Generate new ID and store it
+            archive_id = str(uuid.uuid4())
+            self._manifest_database.put(key, archive_id.encode())
+            return archive_id
 
     def get_archive_id(self) -> str | None:
         """Get the current archive identifier from the manifest.
@@ -244,6 +257,10 @@ class ArchiveStore:
         Uses a 128-bit Murmur3 hash of the path as a prefix, with sequence numbers
         to handle hash collisions robustly.
 
+        Thread-safe: Uses a keyed lock to coordinate concurrent access to the same path hash.
+        Multiple threads can safely call this method in parallel for different path hashes,
+        but threads working on the same path hash will serialize their operations.
+
         Args:
             path: Relative path from archive root
             signature: File metadata including path, digest, mtime_ns, and ec_id
@@ -257,39 +274,45 @@ class ArchiveStore:
         path_hash = self._compute_long_path_hash(path)
         path_components = [str(part) for part in path.parts]
 
-        # Create prefixed database for this hash
-        hash_db = self._file_signature_database.prefixed_db(path_hash)
+        # Acquire exclusive access to this path hash
+        with self._path_hash_lock.lock(path_hash):
+            # Create prefixed database for this hash
+            hash_db = self._file_signature_database.prefixed_db(path_hash)
 
-        # Scan existing sequence numbers to check if path already exists
-        next_seq_num = 0
-        found_existing = False
-        for key, data in hash_db.iterator():
-            # Key here is just the varint sequence number (hash prefix is already stripped)
-            seq_num, _ = decode_varint(key, 0)
-            next_seq_num = max(next_seq_num, seq_num + 1)
+            # Scan existing sequence numbers to check if path already exists
+            next_seq_num = 0
+            found_existing = False
+            for key, data in hash_db.iterator():
+                # Key here is just the varint sequence number (hash prefix is already stripped)
+                seq_num, _ = decode_varint(key, 0)
+                next_seq_num = max(next_seq_num, seq_num + 1)
 
-            # Check if this is the same path
-            existing_data: list[Any] = msgpack.loads(data)
-            existing_path = Path(*existing_data[0])
-            if existing_path == path:
-                # Update existing entry
+                # Check if this is the same path
+                existing_data: list[Any] = msgpack.loads(data)
+                existing_path = Path(*existing_data[0])
+                if existing_path == path:
+                    # Update existing entry
+                    hash_db.put(
+                        key,
+                        msgpack.dumps([path_components, signature.digest, signature.mtime_ns, signature.ec_id])
+                    )
+                    found_existing = True
+                    break
+
+            # If path doesn't exist, insert with new sequence number
+            if not found_existing:
+                seq_num_bytes = encode_varint(next_seq_num)
                 hash_db.put(
-                    key,
+                    seq_num_bytes,
                     msgpack.dumps([path_components, signature.digest, signature.mtime_ns, signature.ec_id])
                 )
-                found_existing = True
-                break
-
-        # If path doesn't exist, insert with new sequence number
-        if not found_existing:
-            seq_num_bytes = encode_varint(next_seq_num)
-            hash_db.put(
-                seq_num_bytes,
-                msgpack.dumps([path_components, signature.digest, signature.mtime_ns, signature.ec_id])
-            )
 
     def deregister_file(self, path):
         """Remove file signature entry from database.
+
+        Thread-safe: Uses a keyed lock to coordinate concurrent access to the same path hash.
+        Multiple threads can safely call this method in parallel for different path hashes,
+        but threads working on the same path hash will serialize their operations.
 
         Args:
             path: Relative path from archive root
@@ -299,18 +322,21 @@ class ArchiveStore:
             - Searches through sequence numbers to find and remove matching path
         """
         path_hash = self._compute_long_path_hash(path)
-        hash_db = self._file_signature_database.prefixed_db(path_hash)
 
-        # Search for the specific path entry and delete it
-        for key, data in hash_db.iterator():
-            # Unpack: [path_components, digest, mtime_ns, ec_id]
-            stored_data: list[Any] = msgpack.loads(data)
-            stored_path = Path(*stored_data[0])
+        # Acquire exclusive access to this path hash
+        with self._path_hash_lock.lock(path_hash):
+            hash_db = self._file_signature_database.prefixed_db(path_hash)
 
-            # Check if this is the path we're looking for
-            if stored_path == path:
-                hash_db.delete(key)
-                return
+            # Search for the specific path entry and delete it
+            for key, data in hash_db.iterator():
+                # Unpack: [path_components, digest, mtime_ns, ec_id]
+                stored_data: list[Any] = msgpack.loads(data)
+                stored_path = Path(*stored_data[0])
+
+                # Check if this is the path we're looking for
+                if stored_path == path:
+                    hash_db.delete(key)
+                    return
 
     def lookup_file(self, path) -> FileSignature | None:
         """Retrieve stored file signature by path.
@@ -482,6 +508,11 @@ class ArchiveStore:
         Uses a hash-based key format with sequence numbers for collision handling.
         Each path is stored independently using Murmur3 hash + variable-length sequence number.
 
+        Thread-safe: Uses a keyed lock to coordinate concurrent access to the same EC prefix.
+        Multiple threads can safely call this method in parallel for different EC prefixes,
+        but threads working on the same (digest, ec_id) pair will serialize their sequence
+        number scanning operations.
+
         Args:
             digest: Content digest of the files (hash value)
             ec_id: Equivalence class ID to add the paths to
@@ -495,49 +526,56 @@ class ArchiveStore:
         """
         # Create prefix for this EC class (digest + ec_id)
         ec_prefix = digest + ec_id.to_bytes(4, 'big')
-        ec_db = self._file_hash_database.prefixed_db(ec_prefix)
 
-        # Group paths by their hash to process collisions efficiently
-        paths_by_hash: dict[int, set[Path]] = {}
-        for path in paths_to_add:
-            path_hash = self._compute_short_path_hash(path)
-            if path_hash not in paths_by_hash:
-                paths_by_hash[path_hash] = set()
-            paths_by_hash[path_hash].add(path)
+        # Acquire exclusive access to this EC prefix
+        with self._ec_prefix_lock.lock(ec_prefix):
+            ec_db = self._file_hash_database.prefixed_db(ec_prefix)
 
-        # Process each hash group
-        for path_hash, paths_set in paths_by_hash.items():
-            # Track which paths we've already found in the database to skip them
-            paths_to_insert = paths_set.copy()
+            # Group paths by their hash to process collisions efficiently
+            paths_by_hash: dict[int, set[Path]] = {}
+            for path in paths_to_add:
+                path_hash = self._compute_short_path_hash(path)
+                if path_hash not in paths_by_hash:
+                    paths_by_hash[path_hash] = set()
+                paths_by_hash[path_hash].add(path)
 
-            # Create prefix for this path hash (ec_prefix already includes digest + ec_id)
-            hash_prefix = path_hash.to_bytes(4, 'big')
-            hash_db = ec_db.prefixed_db(hash_prefix)
+            # Process each hash group
+            for path_hash, paths_set in paths_by_hash.items():
+                # Track which paths we've already found in the database to skip them
+                paths_to_insert = paths_set.copy()
 
-            # Scan existing sequence numbers to find what's already there and what's the next available
-            next_seq_num = 0
-            for key, data in hash_db.iterator():
-                # Key here is just the varint sequence number (hash prefix is already stripped)
-                seq_num, _ = decode_varint(key, 0)
-                next_seq_num = max(next_seq_num, seq_num + 1)
+                # Create prefix for this path hash (ec_prefix already includes digest + ec_id)
+                hash_prefix = path_hash.to_bytes(4, 'big')
+                hash_db = ec_db.prefixed_db(hash_prefix)
 
-                # Check if this path is already stored
-                path_components: list[str] = msgpack.loads(data)
-                existing_path = Path(*path_components)
-                paths_to_insert.discard(existing_path)
+                # Scan existing sequence numbers to find what's already there and what's the next available
+                next_seq_num = 0
+                for key, data in hash_db.iterator():
+                    # Key here is just the varint sequence number (hash prefix is already stripped)
+                    seq_num, _ = decode_varint(key, 0)
+                    next_seq_num = max(next_seq_num, seq_num + 1)
 
-            # Insert remaining paths with sequential sequence numbers
-            for path in paths_to_insert:
-                path_data = msgpack.dumps([str(part) for part in path.parts])
-                seq_num_bytes = encode_varint(next_seq_num)
-                hash_db.put(seq_num_bytes, path_data)
-                next_seq_num += 1
+                    # Check if this path is already stored
+                    path_components: list[str] = msgpack.loads(data)
+                    existing_path = Path(*path_components)
+                    paths_to_insert.discard(existing_path)
+
+                # Insert remaining paths with sequential sequence numbers
+                for path in paths_to_insert:
+                    path_data = msgpack.dumps([str(part) for part in path.parts])
+                    seq_num_bytes = encode_varint(next_seq_num)
+                    hash_db.put(seq_num_bytes, path_data)
+                    next_seq_num += 1
 
     def remove_paths_from_equivalent_class(self, digest: bytes, ec_id: int, paths_to_remove: list[Path]) -> None:
         """Remove paths from an equivalent class.
 
         Uses hash-based key format with sequence numbers. Removes entries directly
         without compaction - sequence numbers remain stable.
+
+        Thread-safe: Uses a keyed lock to coordinate concurrent access to the same EC prefix.
+        Multiple threads can safely call this method in parallel for different EC prefixes,
+        but threads working on the same (digest, ec_id) pair will serialize their operations.
 
         Args:
             digest: Content digest of the file (hash value)
@@ -553,39 +591,42 @@ class ArchiveStore:
         """
         # Create prefix for this EC class (digest + ec_id)
         ec_prefix = digest + ec_id.to_bytes(4, 'big')
-        ec_db = self._file_hash_database.prefixed_db(ec_prefix)
 
-        # Group paths by their hash to process efficiently
-        paths_by_hash: dict[int, set[Path]] = {}
-        for path in paths_to_remove:
-            path_hash = self._compute_short_path_hash(path)
-            if path_hash not in paths_by_hash:
-                paths_by_hash[path_hash] = set()
-            paths_by_hash[path_hash].add(path)
+        # Acquire exclusive access to this EC prefix
+        with self._ec_prefix_lock.lock(ec_prefix):
+            ec_db = self._file_hash_database.prefixed_db(ec_prefix)
 
-        # Process each hash group
-        for path_hash, paths_set in paths_by_hash.items():
-            # Track which paths we still need to remove
-            paths_to_delete = paths_set.copy()
+            # Group paths by their hash to process efficiently
+            paths_by_hash: dict[int, set[Path]] = {}
+            for path in paths_to_remove:
+                path_hash = self._compute_short_path_hash(path)
+                if path_hash not in paths_by_hash:
+                    paths_by_hash[path_hash] = set()
+                paths_by_hash[path_hash].add(path)
 
-            # Create prefix for this path hash
-            hash_prefix = path_hash.to_bytes(4, 'big')
-            hash_db = ec_db.prefixed_db(hash_prefix)
+            # Process each hash group
+            for path_hash, paths_set in paths_by_hash.items():
+                # Track which paths we still need to remove
+                paths_to_delete = paths_set.copy()
 
-            # Scan all sequence numbers for this hash
-            keys_to_delete: list[bytes] = []
-            for key, data in hash_db.iterator():
-                # Check if this path should be deleted
-                path_components: list[str] = msgpack.loads(data)
-                existing_path = Path(*path_components)
+                # Create prefix for this path hash
+                hash_prefix = path_hash.to_bytes(4, 'big')
+                hash_db = ec_db.prefixed_db(hash_prefix)
 
-                if existing_path in paths_to_delete:
-                    keys_to_delete.append(key)
-                    paths_to_delete.discard(existing_path)
+                # Scan all sequence numbers for this hash
+                keys_to_delete: list[bytes] = []
+                for key, data in hash_db.iterator():
+                    # Check if this path should be deleted
+                    path_components: list[str] = msgpack.loads(data)
+                    existing_path = Path(*path_components)
 
-            # Delete all matching keys
-            for key in keys_to_delete:
-                hash_db.delete(key)
+                    if existing_path in paths_to_delete:
+                        keys_to_delete.append(key)
+                        paths_to_delete.discard(existing_path)
+
+                # Delete all matching keys
+                for key in keys_to_delete:
+                    hash_db.delete(key)
 
     def inspect(self, hash_algorithms: dict[str, tuple[int, Any]]) -> Iterator[str]:
         """Generate human-readable index entries for debugging and inspection.

@@ -2,7 +2,7 @@ from asyncio import TaskGroup
 from pathlib import Path
 from typing import NamedTuple, Callable, Awaitable
 
-from ..utils.keyed_lock import KeyedLock
+from ..utils.async_keyed_lock import AsyncKeyedLock
 from ..utils.walker import FileContext
 from ..utils.throttler import Throttler
 from ..store.archive_store import ArchiveStore, FileSignature
@@ -31,7 +31,7 @@ class RefreshProcessor:
         self._processor = args.processor
         self._archive_path = store.archive_path
         _, self._calculate_digest = args.hash_algorithm
-        self._keyed_lock = KeyedLock()
+        self._keyed_lock = AsyncKeyedLock()
 
     async def run(self):
         """Execute the refresh operation."""
@@ -71,6 +71,9 @@ class RefreshProcessor:
         """Clean up an entry that needs to be refreshed or removed."""
         self._store.register_file(relative_path, FileSignature(relative_path, entry_signature.digest, entry_signature.mtime_ns, None))
 
+        # Acquire async-level lock for this digest to coordinate concurrent async tasks.
+        # While ArchiveStore methods are thread-safe, this lock prevents async task-level
+        # races (e.g., EC removal happening concurrently with EC assignment in _generate_signature).
         async with self._keyed_lock.lock(entry_signature.digest):
             if entry_signature.ec_id is not None:
                 self._store.remove_paths_from_equivalent_class(entry_signature.digest, entry_signature.ec_id, [relative_path])
@@ -81,6 +84,11 @@ class RefreshProcessor:
         """Generate signature for a file and assign equivalence class."""
         digest = await self._calculate_digest(file_path)
 
+        # Acquire async-level lock for this digest to ensure the entire EC assignment logic
+        # runs atomically across concurrent async tasks. Without this, two tasks processing
+        # the same digest could interleave: both read the same EC list, both determine the
+        # next EC ID is 0, both compare content, and both try to add to the same EC ID,
+        # leading to incorrect EC assignments.
         async with self._keyed_lock.lock(digest):
             next_ec_id = 0
             for ec_id, paths in self._store.list_content_equivalent_classes(digest):
