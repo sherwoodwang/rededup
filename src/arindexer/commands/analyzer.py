@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import stat
 from abc import ABC, abstractmethod
@@ -11,6 +12,8 @@ from typing import Any, NamedTuple
 import mmh3
 import msgpack
 import plyvel
+
+logger = logging.getLogger(__name__)
 
 from ..utils.processor import Processor
 from ..utils.varint import encode_varint, decode_varint
@@ -638,18 +641,19 @@ class AnalyzeProcessor:
             dir_path: Absolute path to the directory
             context: File context for the directory
         """
+        logger.info(f"Handling directory: {dir_path}")
+
         # Register a DirectoryListener on the context
         listener: DirectoryListener = self._listener_coordinator.register_directory(context)
 
-        # Create a callback that binds the context to the analysis method
-        async def analyze_with_context(results: list[Any]) -> FileAnalysisResult:
-            return await self._analyze_directory_with_children(dir_path, context, results)
+        result_task: asyncio.Task[FileAnalysisResult] = listener.schedule_callback(
+            lambda results: self._analyze_directory_with_children(dir_path, context, results)
+        )
 
-        # schedule_callback returns a task/future containing the callback's return value
-        result_task: asyncio.Task[FileAnalysisResult] = listener.schedule_callback(analyze_with_context)
+        # Register this directory's result with its parent directory's listener
+        self._listener_coordinator.register_child_with_parent(context, result_task)
 
-        # Register this directory's result task with its parent
-        await self._register_file_with_parent(context, result_task)
+        logger.info(f"Completed handling directory: {dir_path}")
 
     async def _analyze_directory_with_children(
             self,
@@ -670,6 +674,8 @@ class AnalyzeProcessor:
         Returns:
             ImmediateResult containing duplicate information for this directory
         """
+        logger.info(f"Analyzing directory: {dir_path}")
+
         base_name: str = context.name or "unknown"
 
         # Extract parent directories from child DuplicateRecords and build directory contents
@@ -758,6 +764,8 @@ class AnalyzeProcessor:
             path, duplicates, total_size, duplicated_size
         )
         self._writer.write_duplicate_record(record)
+
+        logger.info(f"Completed analyzing directory: {dir_path}")
 
         return ImmediateResult(base_name, record)
 
@@ -1048,9 +1056,13 @@ class AnalyzeProcessor:
             context: File context for the file
             throttler: Throttler for concurrency control
         """
-        # Schedule file analysis
+        logger.info(f"Handling file: {file_path}")
+
         file_task: asyncio.Task[FileAnalysisResult] = await throttler.schedule(self._analyze_file(file_path, context))
-        await self._register_file_with_parent(context, file_task)
+        # Register this file's analysis result with its parent directory's listener
+        self._listener_coordinator.register_child_with_parent(context, file_task)
+
+        logger.info(f"Completed handling file: {file_path}")
 
     async def _defer_for_parent_directory(self, context: FileContext) -> None:
         """Defer a non-regular file for comparison by its parent directory handler.
@@ -1061,34 +1073,11 @@ class AnalyzeProcessor:
         Args:
             context: File context for the file
         """
-        # Create an immediately resolved future with a deferred result
         future: asyncio.Future[FileAnalysisResult] = asyncio.Future()
         base_name: str = context.name or "unknown"
         future.set_result(DeferredResult(base_name))
-        await self._register_file_with_parent(context, future)
-
-    async def _register_file_with_parent(
-            self,
-            context: FileContext,
-            file_task: asyncio.Future[FileAnalysisResult] | asyncio.Task[FileAnalysisResult]
-    ) -> None:
-        """Register a file task/future with its parent directory's listener.
-
-        Args:
-            context: File context for the file
-            file_task: Task or Future representing the file's analysis
-        """
-        # Add the task to parent directory's listener if it exists
-        try:
-            parent_context = context.parent
-        except LookupError:
-            # No parent context (root level file)
-            return
-
-        context_key = self._listener_coordinator.context_key
-        if context_key in parent_context:
-            parent_listener: DirectoryListener = parent_context[context_key]
-            parent_listener.add_child(file_task)
+        # Register this deferred item with its parent directory's listener
+        self._listener_coordinator.register_child_with_parent(context, future)
 
     async def _analyze_file(self, file_path: Path, context: FileContext) -> ImmediateResult:
         """Analyze a single file and write duplicate record to database if duplicates found.
@@ -1100,6 +1089,8 @@ class AnalyzeProcessor:
         Returns:
             ImmediateResult containing all duplicate information
         """
+        logger.info(f"Analyzing file: {file_path}")
+
         # Calculate digest
         digest: bytes = await self._calculate_digest(file_path)
 
@@ -1176,6 +1167,8 @@ class AnalyzeProcessor:
         )
         self._writer.write_duplicate_record(record)
 
+        logger.info(f"Completed analyzing file: {file_path}")
+
         # Return immediate result with the duplicate record
         return ImmediateResult(file_path.name, record)
 
@@ -1195,8 +1188,12 @@ async def do_analyze(
     Raises:
         FileExistsError: If a file exists at the report directory path
     """
+    logger.info(f"Starting analysis for {len(args.input_paths)} path(s)")
+
     # Process each input path
     for input_path in args.input_paths:
+        logger.info(f"Analyzing path: {input_path}")
+
         # Create report directory
         report_dir: Path = get_report_directory_path(input_path)
 
@@ -1223,6 +1220,10 @@ async def do_analyze(
         with writer:
             processor: AnalyzeProcessor = AnalyzeProcessor(store, args, input_path, writer)
             await processor.run()
+
+        logger.info(f"Completed analysis for: {input_path}")
+
+    logger.info(f"Analysis complete for all {len(args.input_paths)} path(s)")
 
 
 def get_report_directory_path(input_path: Path) -> Path:

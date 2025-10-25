@@ -21,7 +21,10 @@ a directory is finished, which triggers the listener's completion event.
 """
 
 import asyncio
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .walker import FileContext
 
 
 class ChildTaskException:
@@ -101,6 +104,27 @@ class DirectoryListenerCoordinator:
         )
         context[self._key] = listener
         return listener
+
+    def register_child_with_parent(
+            self,
+            child_context: 'FileContext',
+            child_task: asyncio.Future[Any]
+    ) -> None:
+        """Register a child's task with its parent directory's listener.
+
+        Args:
+            child_context: File context for the child file/directory
+            child_task: Task or Future representing the child's analysis result
+        """
+        try:
+            parent_context = child_context.parent
+        except LookupError:
+            # No parent context (root level file)
+            return
+
+        if self._key in parent_context:
+            parent_listener: DirectoryListener = parent_context[self._key]
+            parent_listener.add_child(child_task)
 
 
 class DirectoryListener:

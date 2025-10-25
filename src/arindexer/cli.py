@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 import textwrap
 from functools import wraps
@@ -56,6 +57,10 @@ def archive_indexer():
         '--verbose',
         action='store_true',
         help='Enable verbose output for detailed information during operations')
+    parser.add_argument(
+        '--log-file',
+        metavar='PATH',
+        help='Path to log file for operation logging. If not provided, uses logging.path from archive settings or no logging.')
     subparsers = parser.add_subparsers(
         dest='command',
         title='Commands',
@@ -192,6 +197,14 @@ def archive_indexer():
 
     args = parser.parse_args()
 
+    # Configure logging from CLI argument if provided
+    if hasattr(args, 'log_file') and args.log_file:
+        logging.basicConfig(
+            filename=args.log_file,
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+
     archive_path = args.archive
     if archive_path is None:
         archive_path = os.environ.get('ARINDEXER_ARCHIVE')
@@ -207,11 +220,13 @@ def archive_indexer():
             attempt = Path(working_directory)
             while True:
                 try:
-                    return Archive(processor, attempt, output=output)
+                    archive = Archive(processor, attempt, output=output)
+                    break
                 except ArchiveIndexNotFound as e:
                     if attempt == attempt.parent:
                         if args.create:
-                            return Archive(processor, working_directory, create=True, output=output)
+                            archive = Archive(processor, working_directory, create=True, output=output)
+                            break
                         else:
                             if first_exception is not None:
                                 raise first_exception
@@ -222,7 +237,11 @@ def archive_indexer():
                     if first_exception is None:
                         first_exception = e
         else:
-            return Archive(processor, archive_path, output=output)
+            archive = Archive(processor, archive_path, output=output)
+
+        if not (hasattr(args, 'log_file') and args.log_file):
+            archive.configure_logging_from_settings()
+        return archive
 
     # Call the method with load_archive function
     # The @needs_archive decorator will create Processor and load the archive

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Iterator, Callable, Awaitable
@@ -61,6 +62,7 @@ class Archive:
         self._store = ArchiveStore(settings, archive_path, create)
         self._processor = processor
         self._output = output
+        self._settings = settings
 
         self._hash_algorithms = {
             'sha256': (32, self._processor.sha256)
@@ -84,6 +86,26 @@ class Archive:
         """Close LevelDB database and mark archive as closed."""
         if hasattr(self, '_store'):
             self._store.close()
+
+    def configure_logging_from_settings(self) -> bool:
+        """Configure logging from archive settings if a log path is specified.
+
+        Returns:
+            True if logging was configured, False otherwise
+        """
+        log_path = self._settings.get('logging.path')
+        if log_path:
+            # Reset logging configuration
+            for handler in logging.root.handlers[:]:
+                logging.root.removeHandler(handler)
+
+            logging.basicConfig(
+                filename=log_path,
+                level=logging.INFO,
+                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+            return True
+        return False
 
     def rebuild(self):
         """Completely rebuild index by truncating database and re-scanning all files.

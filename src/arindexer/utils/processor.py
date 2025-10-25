@@ -2,11 +2,14 @@ import asyncio
 import datetime
 import filecmp
 import hashlib
+import logging
 import multiprocessing
 import pathlib
 import stat
 from enum import StrEnum
 from typing import Awaitable
+
+logger = logging.getLogger(__name__)
 
 
 def compute_sha256_for_path(path: pathlib.Path):
@@ -97,17 +100,35 @@ class Processor:
         return self._concurrency
 
     def sha256(self, path: pathlib.Path) -> Awaitable[bytes]:
-        return self._evaluate(compute_sha256_for_path, path)
+        logger.info(f"Starting hash computation for: {path}")
+
+        async def log_and_compute():
+            result = await self._evaluate(compute_sha256_for_path, path)
+            logger.info(f"Completed hash computation for: {path}")
+            return result
+
+        return log_and_compute()
 
     def compare_content(self, a: pathlib.Path, b: pathlib.Path) -> Awaitable[bool]:
         """Compare content of two files.
 
         :return: True if two files are equal, False otherwise."""
-        return self._evaluate(compare_file_content, a, b)
+        logger.info(f"Starting content comparison: {a} vs {b}")
+
+        async def log_and_compare():
+            result = await self._evaluate(compare_file_content, a, b)
+            logger.info(f"Completed content comparison: {a} vs {b} (equal={result})")
+            return result
+
+        return log_and_compare()
 
     def compare_metadata(self, a: pathlib.Path, b: pathlib.Path) -> Awaitable[list[FileMetadataDifference]]:
+        logger.info(f"Starting metadata comparison: {a} vs {b}")
+
         async def evaluate_and_convert():
-            return [FileMetadataDifference(*t) for t in await self._evaluate(compare_file_metadata, a, b)]
+            result = [FileMetadataDifference(*t) for t in await self._evaluate(compare_file_metadata, a, b)]
+            logger.info(f"Completed metadata comparison: {a} vs {b} (differences={len(result)})")
+            return result
 
         return evaluate_and_convert()
 
