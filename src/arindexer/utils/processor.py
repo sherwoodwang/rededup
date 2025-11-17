@@ -9,19 +9,24 @@ import stat
 from enum import StrEnum
 from typing import Awaitable
 
+from .profiling import profile_worker
+
 logger = logging.getLogger(__name__)
 
 
+@profile_worker
 def compute_sha256_for_path(path: pathlib.Path):
     with open(path, "rb") as f:
         # noinspection PyTypeChecker
         return hashlib.file_digest(f, hashlib.sha256).digest()
 
 
+@profile_worker
 def compare_file_content(a: pathlib.Path, b: pathlib.Path):
     return filecmp.cmp(a, b, shallow=False)
 
 
+@profile_worker
 def compare_file_metadata(a: pathlib.Path, b: pathlib.Path):
     sta = a.stat(follow_symlinks=False)
     stb = b.stat(follow_symlinks=False)

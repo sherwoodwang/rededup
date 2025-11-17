@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import Archive, Processor, FileMetadataDifferencePattern, FileMetadataDifferenceType, StandardOutput, \
     ArchiveIndexNotFound
+from .utils.profiling import profile_main
 
 
 def needs_archive(func):
@@ -35,6 +36,7 @@ def no_archive(func):
     return wrapper
 
 
+@profile_main
 def archive_indexer():
     parser = argparse.ArgumentParser(
         prog='arindexer',
@@ -61,6 +63,11 @@ def archive_indexer():
         '--log-file',
         metavar='PATH',
         help='Path to log file for operation logging. If not provided, uses logging.path from archive settings or no logging.')
+    parser.add_argument(
+        '--log-level',
+        metavar='LEVEL',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        help='Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL). Defaults to INFO when --log-file is provided.')
     subparsers = parser.add_subparsers(
         dest='command',
         title='Commands',
@@ -199,9 +206,14 @@ def archive_indexer():
 
     # Configure logging from CLI argument if provided
     if hasattr(args, 'log_file') and args.log_file:
+        # Determine log level: use --log-level if provided, otherwise default to INFO
+        log_level = getattr(args, 'log_level', None)
+        if log_level is None:
+            log_level = 'INFO'
+
         logging.basicConfig(
             filename=args.log_file,
-            level=logging.INFO,
+            level=getattr(logging, log_level),
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
 

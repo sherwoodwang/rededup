@@ -1,3 +1,4 @@
+import functools
 import os
 import stat
 from pathlib import Path
@@ -9,8 +10,8 @@ class FileContext:
 
     IMPORTANT: The _path attribute is protected and should not be accessed directly
     outside of this class. To get the full path of a file, concatenate the archive/root
-    path with the relative_path() instead:
-        full_path = archive_path / context.relative_path()
+    path with the relative_path property instead:
+        full_path = archive_path / context.relative_path
 
     The _path attribute is used internally for stat() operations when stat info
     is not pre-computed.
@@ -41,20 +42,27 @@ class FileContext:
             self._stat = self._path.stat(follow_symlinks=False)
         return self._stat
 
-    def relative_path(self) -> Path:
-        path = None
+    @functools.cached_property
+    def relative_path(self) -> Path | None:
+        """Get the relative path from the root context.
 
-        context = self
-        while context is not None:
-            if context._name is not None:
-                if path is None:
-                    path = Path(context._name)
-                else:
-                    path = Path(context._name) / path
+        This method recursively builds the path by reusing parent results,
+        and caches the result for performance.
+        """
+        if self._name is None:
+            # Root context with no name
+            return None
 
-            context = context._parent
+        if self._parent is None:
+            # This is a top-level entry
+            return Path(self._name)
 
-        return path
+        # Recursively get parent's path and append this name
+        parent_path = self._parent.relative_path
+        if parent_path is None:
+            return Path(self._name)
+
+        return parent_path / self._name
 
     def complete(self):
         # Call complete() on any associated objects that have a complete method
@@ -155,7 +163,7 @@ def walk_with_policy(path: Path, policy: WalkPolicy) -> Iterator[tuple[Path, Fil
             pending = None
 
             # Check if this path should be excluded
-            if file_context.relative_path() in policy.excluded_paths:
+            if file_context.relative_path in policy.excluded_paths:
                 pending = False
                 continue
 

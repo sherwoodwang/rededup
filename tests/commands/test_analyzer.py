@@ -133,7 +133,7 @@ class DuplicateRecordTest(unittest.TestCase):
 
         record = DuplicateRecord(
             path=Path('target/file.txt'),
-            duplicates=duplicates,
+            duplicates=[comparison1, comparison2],
             total_size=200,
             duplicated_size=200
         )
@@ -142,8 +142,8 @@ class DuplicateRecordTest(unittest.TestCase):
         self.assertEqual(2, len(record.duplicates))
         self.assertEqual(200, record.total_size)
         self.assertEqual(200, record.duplicated_size)
-        self.assertEqual(Path('dup1.txt'), record.duplicates[0][0])
-        self.assertEqual(Path('dup2.txt'), record.duplicates[1][0])
+        self.assertEqual(Path('dup1.txt'), record.duplicates[0].path)
+        self.assertEqual(Path('dup2.txt'), record.duplicates[1].path)
 
     def test_create_empty(self):
         """Create empty DuplicateRecord."""
@@ -165,7 +165,7 @@ class DuplicateRecordTest(unittest.TestCase):
 
         original = DuplicateRecord(
             path=Path('target/file.txt'),
-            duplicates=duplicates,
+            duplicates=[comparison],
             total_size=512,
             duplicated_size=512
         )
@@ -180,10 +180,10 @@ class DuplicateRecordTest(unittest.TestCase):
         self.assertEqual(original.duplicated_size, deserialized.duplicated_size)
         self.assertEqual(len(original.duplicates), len(deserialized.duplicates))
 
-        orig_path, orig_comp = original.duplicates[0]
-        deser_path, deser_comp = deserialized.duplicates[0]
+        orig_comp = original.duplicates[0]
+        deser_comp = deserialized.duplicates[0]
 
-        self.assertEqual(orig_path, deser_path)
+        self.assertEqual(orig_comp.path, deser_comp.path)
         self.assertEqual(orig_comp.mtime_match, deser_comp.mtime_match)
         self.assertEqual(orig_comp.atime_match, deser_comp.atime_match)
         self.assertEqual(orig_comp.ctime_match, deser_comp.ctime_match)
@@ -205,7 +205,7 @@ class DuplicateRecordTest(unittest.TestCase):
 
         original = DuplicateRecord(
             path=Path('target/also/deep/nested/file.txt'),
-            duplicates=duplicates,
+            duplicates=[comparison],
             total_size=1024,
             duplicated_size=1024
         )
@@ -214,7 +214,7 @@ class DuplicateRecordTest(unittest.TestCase):
         deserialized = DuplicateRecord.from_msgpack(serialized)
 
         self.assertEqual(original.path, deserialized.path)
-        self.assertEqual(original.duplicates[0][0], deserialized.duplicates[0][0])
+        self.assertEqual(original.duplicates[0].path, deserialized.duplicates[0].path)
 
 
 class ReportWriterTest(unittest.TestCase):
@@ -237,7 +237,7 @@ class ReportWriterTest(unittest.TestCase):
                 )
                 record = DuplicateRecord(
                     Path('target/file.txt'),
-                    [(Path('archive/file.txt'), comparison)],
+                    [comparison],
                     100,  # total_size
                     100   # duplicated_size
                 )
@@ -251,8 +251,8 @@ class ReportWriterTest(unittest.TestCase):
                 self.assertIsNotNone(retrieved, "Record not found in database")
                 self.assertEqual(100, retrieved.duplicated_size)
                 self.assertEqual(1, len(retrieved.duplicates))
-                path, comp = retrieved.duplicates[0]
-                self.assertEqual(Path('archive/file.txt'), path)
+                comp = retrieved.duplicates[0]
+                self.assertEqual(Path('archive/file.txt'), comp.path)
                 self.assertTrue(comp.is_identical)
                 self.assertEqual(1, comp.duplicated_items)
 
@@ -269,7 +269,7 @@ class ReportWriterTest(unittest.TestCase):
                                           mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
                                           duplicated_size=50, duplicated_items=1,
                                           is_identical=True, is_superset=True)
-                record1 = DuplicateRecord(Path('file.txt'), [(Path('dup1.txt'), comp1)], 50, 50)
+                record1 = DuplicateRecord(Path('file.txt'), [comp1], 50, 50)
                 writer.write_duplicate_record(record1)
 
                 # Update with new duplicate
@@ -279,7 +279,7 @@ class ReportWriterTest(unittest.TestCase):
                                           is_identical=False, is_superset=False)
                 record2 = DuplicateRecord(
                     Path('file.txt'),
-                    [(Path('dup1.txt'), comp1), (Path('dup2.txt'), comp2)],
+                    [comp1, comp2],
                     100,  # total_size
                     100   # duplicated_size
                 )
@@ -311,7 +311,7 @@ class ReportWriterTest(unittest.TestCase):
                                             mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
                                             duplicated_size=100, duplicated_items=1,
                                             is_identical=True, is_superset=True)
-                    record = DuplicateRecord(Path(f'file{i}.txt'), [(Path(f'dup{i}.txt'), comp)], 100, 100)
+                    record = DuplicateRecord(Path(f'file{i}.txt'), [comp], 100, 100)
                     writer.write_duplicate_record(record)
 
             # Verify all records exist using ReportReader
@@ -368,7 +368,7 @@ class FileAnalysisTest(unittest.TestCase):
                             found_record = True
                             # Verify the record
                             self.assertEqual(1, len(record.duplicates))
-                            path, comparison = record.duplicates[0]
+                            comparison = record.duplicates[0]
                             self.assertEqual(Path('original.txt'), path)
                             # All metadata matches
                             self.assertTrue(comparison.mtime_match)
@@ -421,7 +421,7 @@ class FileAnalysisTest(unittest.TestCase):
                         record = DuplicateRecord.from_msgpack(value)
                         if 'newer.txt' in str(record.path):
                             found_record = True
-                            path, comparison = record.duplicates[0]
+                            comparison = record.duplicates[0]
                             # Metadata should not match
                             self.assertFalse(comparison.mtime_match)
                             # Should not be identical
@@ -473,12 +473,12 @@ class FileAnalysisTest(unittest.TestCase):
                             found_record = True
                             # Should have 3 duplicates
                             self.assertEqual(3, len(record.duplicates))
-                            duplicate_names = [str(path) for path, _ in record.duplicates]
+                            duplicate_names = [str(comparison.path) for comparison in record.duplicates]
                             self.assertIn('dup1.txt', duplicate_names)
                             self.assertIn('dup2.txt', duplicate_names)
                             self.assertIn('dup3.txt', duplicate_names)
                             # Each duplicate should have duplicated_items=1 for a file
-                            for _, comparison in record.duplicates:
+                            for comparison in record.duplicates:
                                 self.assertEqual(1, comparison.duplicated_items)
 
                             # CRITICAL: Verify duplicated_size semantics
@@ -487,7 +487,7 @@ class FileAnalysisTest(unittest.TestCase):
                             self.assertEqual(file_size, record.duplicated_size,
                                            "DuplicateRecord.duplicated_size should count file once")
                             # Each DuplicateMatch.duplicated_size should also be the file size
-                            for _, comparison in record.duplicates:
+                            for comparison in record.duplicates:
                                 self.assertEqual(file_size, comparison.duplicated_size,
                                                "DuplicateMatch.duplicated_size should be file size")
                             break
@@ -536,7 +536,7 @@ class FileAnalysisTest(unittest.TestCase):
                     try:
                         record = DuplicateRecord.from_msgpack(value)
                         if 'file.txt' in str(record.path):
-                            path, comparison = record.duplicates[0]
+                            comparison = record.duplicates[0]
                             # atime should not match
                             self.assertFalse(comparison.atime_match)
                             # But should still be identical (default rule excludes atime)
@@ -575,7 +575,7 @@ class FileAnalysisTest(unittest.TestCase):
                     try:
                         record = DuplicateRecord.from_msgpack(value)
                         if 'file.txt' in str(record.path):
-                            path, comparison = record.duplicates[0]
+                            comparison = record.duplicates[0]
                             # atime still doesn't match
                             self.assertFalse(comparison.atime_match)
                             # Now should NOT be identical (rule includes atime)
@@ -622,7 +622,7 @@ class FileAnalysisTest(unittest.TestCase):
                     try:
                         record = DuplicateRecord.from_msgpack(value)
                         if 'file.txt' in str(record.path):
-                            path, comparison = record.duplicates[0]
+                            comparison = record.duplicates[0]
                             # ctime should not match
                             self.assertFalse(comparison.ctime_match)
                             # Other fields should match
@@ -672,7 +672,7 @@ class FileAnalysisTest(unittest.TestCase):
                     try:
                         record = DuplicateRecord.from_msgpack(value)
                         if 'file.txt' in str(record.path):
-                            path, comparison = record.duplicates[0]
+                            comparison = record.duplicates[0]
                             # mode should not match
                             self.assertFalse(comparison.mode_match)
                             # Timestamps should match (we copied them)
@@ -727,7 +727,7 @@ class FileAnalysisTest(unittest.TestCase):
                     try:
                         record = DuplicateRecord.from_msgpack(value)
                         if 'file.txt' in str(record.path):
-                            path, comparison = record.duplicates[0]
+                            comparison = record.duplicates[0]
                             # owner should not match
                             self.assertFalse(comparison.owner_match)
                             # Other fields should match
@@ -789,7 +789,7 @@ class FileAnalysisTest(unittest.TestCase):
                     try:
                         record = DuplicateRecord.from_msgpack(value)
                         if 'file.txt' in str(record.path):
-                            path, comparison = record.duplicates[0]
+                            comparison = record.duplicates[0]
                             # group should not match
                             self.assertFalse(comparison.group_match)
                             # Other fields should match
@@ -853,8 +853,8 @@ class DirectoryAnalysisTest(unittest.TestCase):
                         record = DuplicateRecord.from_msgpack(value)
                         # Look for the directory record
                         if 'duplicate_dir' in str(record.path) and len(record.duplicates) > 0:
-                            path, comparison = record.duplicates[0]
-                            if 'mydir' in str(path):
+                            comparison = record.duplicates[0]
+                            if 'mydir' in str(comparison.path):
                                 found_dir_record = True
                                 # Should be identical (all files match, no extras)
                                 self.assertTrue(comparison.is_identical)
@@ -910,8 +910,8 @@ class DirectoryAnalysisTest(unittest.TestCase):
                     try:
                         record = DuplicateRecord.from_msgpack(value)
                         if 'smalldir' in str(record.path) and len(record.duplicates) > 0:
-                            path, comparison = record.duplicates[0]
-                            if 'bigdir' in str(path):
+                            comparison = record.duplicates[0]
+                            if 'bigdir' in str(comparison.path):
                                 found_dir_record = True
                                 # Archive has extra files, so not identical
                                 self.assertFalse(comparison.is_identical)
@@ -969,7 +969,7 @@ class DirectoryAnalysisTest(unittest.TestCase):
                             found = True
                             # Directory with 1 file + 1 symlink should have duplicated_items=2
                             if len(record.duplicates) > 0:
-                                _, comparison = record.duplicates[0]
+                                comparison = record.duplicates[0]
                                 self.assertEqual(2, comparison.duplicated_items)
                             break
                     except:
@@ -1045,12 +1045,12 @@ class DirectoryAnalysisTest(unittest.TestCase):
                                            "DuplicateRecord.duplicated_size should count each file once")
 
                             # Find the DuplicateMatch for each archive directory
-                            for dup_path, comparison in record.duplicates:
-                                if 'dir1' in str(dup_path):
+                            for comparison in record.duplicates:
+                                if 'dir1' in str(comparison.path):
                                     # dir1 matches files A and B (100 + 200 = 300)
                                     self.assertEqual(300, comparison.duplicated_size,
                                                    "DuplicateMatch for dir1 should be A + B")
-                                elif 'dir2' in str(dup_path):
+                                elif 'dir2' in str(comparison.path):
                                     # dir2 matches files A, B, and C (100 + 200 + 300 = 600)
                                     self.assertEqual(600, comparison.duplicated_size,
                                                    "DuplicateMatch for dir2 should be A + B + C")
@@ -1131,8 +1131,8 @@ class DirectoryAnalysisTest(unittest.TestCase):
                     try:
                         record = DuplicateRecord.from_msgpack(value)
                         if 'analyzed_parent' in str(record.path) and len(record.duplicates) > 0:
-                            path, comparison = record.duplicates[0]
-                            if 'parent' in str(path):
+                            comparison = record.duplicates[0]
+                            if 'parent' in str(comparison.path):
                                 found_dir_record = True
                                 # Should be identical (all files match, including nested ones)
                                 self.assertTrue(comparison.is_identical)
@@ -1168,7 +1168,7 @@ class ReportReaderTest(unittest.TestCase):
                 )
                 record = DuplicateRecord(
                     Path('target/file.txt'),
-                    [(Path('archive/file.txt'), comparison)],
+                    [comparison],
                     100, 100
                 )
                 writer.write_duplicate_record(record)
@@ -1182,8 +1182,8 @@ class ReportReaderTest(unittest.TestCase):
                 self.assertEqual(100, retrieved.duplicated_size)
                 self.assertEqual(1, len(retrieved.duplicates))
 
-                path, comp = retrieved.duplicates[0]
-                self.assertEqual(Path('archive/file.txt'), path)
+                comp = retrieved.duplicates[0]
+                self.assertEqual(Path('archive/file.txt'), comp.path)
                 self.assertTrue(comp.is_identical)
                 self.assertEqual(1, comp.duplicated_items)
 
@@ -1217,7 +1217,7 @@ class ReportReaderTest(unittest.TestCase):
                     )
                     record = DuplicateRecord(
                         Path(f'file{i}.txt'),
-                        [(Path(f'dup{i}.txt'), comp)],
+                        [comp],
                         100, 100
                     )
                     writer.write_duplicate_record(record)
@@ -1369,8 +1369,8 @@ class DescribeIntegrationTest(unittest.TestCase):
 
                 self.assertIsNotNone(record)
                 self.assertEqual(1, len(record.duplicates))
-                path, comparison = record.duplicates[0]
-                self.assertEqual(Path('original.txt'), path)
+                comparison = record.duplicates[0]
+                self.assertEqual(Path('original.txt'), comparison.path)
                 self.assertTrue(comparison.is_identical)
 
     def test_describe_directory_with_children(self):
@@ -1407,7 +1407,7 @@ class DescribeIntegrationTest(unittest.TestCase):
 
                 self.assertIsNotNone(dir_record)
                 self.assertEqual(1, len(dir_record.duplicates))
-                self.assertTrue(dir_record.duplicates[0][1].is_identical)
+                self.assertTrue(dir_record.duplicates[0].is_identical)
 
                 # Iterate to find child files
                 child_records = []

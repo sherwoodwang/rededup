@@ -59,6 +59,7 @@ arindexer inspect
 | Variable | Description |
 |----------|-------------|
 | `ARINDEXER_ARCHIVE` | Default archive path when `--archive` is not specified |
+| `ARINDEXER_PROFILE` | Enable profiling and specify output directory for cProfile data. When set, creates timestamped subdirectories containing `.prof` files for the main process and any worker processes. |
 
 ### Examples
 

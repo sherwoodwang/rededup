@@ -84,7 +84,7 @@ class FileContextTest(unittest.TestCase):
         """Test relative_path for single-level file."""
         context = FileContext(None, "file.txt")
 
-        self.assertEqual(Path("file.txt"), context.relative_path())
+        self.assertEqual(Path("file.txt"), context.relative_path)
 
     def test_relative_path_nested(self):
         """Test relative_path for nested file structure."""
@@ -93,7 +93,7 @@ class FileContextTest(unittest.TestCase):
         dir2 = FileContext(dir1, "dir2")
         file_ctx = FileContext(dir2, "file.txt")
 
-        self.assertEqual(Path("dir1/dir2/file.txt"), file_ctx.relative_path())
+        self.assertEqual(Path("dir1/dir2/file.txt"), file_ctx.relative_path)
 
     def test_relative_path_with_root_name(self):
         """Test relative_path when root has a name."""
@@ -101,7 +101,7 @@ class FileContextTest(unittest.TestCase):
         dir1 = FileContext(root, "subdir")
         file_ctx = FileContext(dir1, "file.txt")
 
-        self.assertEqual(Path("archive/subdir/file.txt"), file_ctx.relative_path())
+        self.assertEqual(Path("archive/subdir/file.txt"), file_ctx.relative_path)
 
     def test_is_file(self):
         """Test is_file method."""
@@ -191,7 +191,7 @@ class WalkWithPolicyTest(unittest.TestCase):
 
             paths = []
             for file_path, file_context in walk_with_policy(base, policy):
-                paths.append(file_context.relative_path())
+                paths.append(file_context.relative_path)
 
             # Convert to set for comparison
             paths_set = set(paths)
@@ -222,7 +222,7 @@ class WalkWithPolicyTest(unittest.TestCase):
 
             paths = []
             for file_path, file_context in walk_with_policy(base, policy):
-                paths.append(file_context.relative_path())
+                paths.append(file_context.relative_path)
 
             paths_set = set(paths)
 
@@ -271,7 +271,7 @@ class WalkWithPolicyTest(unittest.TestCase):
             relative_paths = []
             for file_path, file_context in walk_with_policy(base, policy):
                 paths.append(file_path)
-                relative_paths.append(file_context.relative_path())
+                relative_paths.append(file_context.relative_path)
 
             # Root should be first in paths
             self.assertEqual(base, paths[0])
@@ -299,7 +299,7 @@ class WalkWithPolicyTest(unittest.TestCase):
 
             # Policy that follows the symlink
             def follow_symlink_policy(file_path: Path, file_context: FileContext) -> FileContext | None:
-                if file_context.relative_path() == Path("link_to_external"):
+                if file_context.relative_path == Path("link_to_external"):
                     resolved = resolve_symlink_target(file_path, {archive})
                     if resolved:
                         return FileContext(file_context.parent, file_path.name, resolved)
@@ -313,7 +313,7 @@ class WalkWithPolicyTest(unittest.TestCase):
 
             paths = []
             for file_path, file_context in walk_with_policy(archive, policy):
-                paths.append(file_context.relative_path())
+                paths.append(file_context.relative_path)
 
             paths_set = set(paths)
 

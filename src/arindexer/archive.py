@@ -90,18 +90,24 @@ class Archive:
     def configure_logging_from_settings(self) -> bool:
         """Configure logging from archive settings if a log path is specified.
 
+        Preserves the current logging level if already configured (e.g., from CLI arguments).
+        Only changes the log file path.
+
         Returns:
             True if logging was configured, False otherwise
         """
         log_path = self._settings.get('logging.path')
         if log_path:
+            # Preserve current log level if already configured, otherwise default to INFO
+            current_level = logging.root.level if logging.root.level != logging.NOTSET else logging.INFO
+
             # Reset logging configuration
             for handler in logging.root.handlers[:]:
                 logging.root.removeHandler(handler)
 
             logging.basicConfig(
                 filename=log_path,
-                level=logging.INFO,
+                level=current_level,
                 format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
             )
             return True
