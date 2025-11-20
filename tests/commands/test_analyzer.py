@@ -238,14 +238,15 @@ class ReportWriterTest(unittest.TestCase):
                 record = DuplicateRecord(
                     Path('target/file.txt'),
                     [comparison],
-                    100,  # total_size
-                    100   # duplicated_size
+                    total_size=100,
+                    total_items=1,
+                    duplicated_size=100
                 )
 
                 writer.write_duplicate_record(record)
 
             # Verify it was written using ReportReader
-            with ReportReader(report_dir) as reader:
+            with ReportReader(report_dir, Path('.')) as reader:
                 retrieved = reader.read_duplicate_record(Path('target/file.txt'))
 
                 self.assertIsNotNone(retrieved, "Record not found in database")
@@ -269,7 +270,7 @@ class ReportWriterTest(unittest.TestCase):
                                           mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
                                           duplicated_size=50, duplicated_items=1,
                                           is_identical=True, is_superset=True)
-                record1 = DuplicateRecord(Path('file.txt'), [comp1], 50, 50)
+                record1 = DuplicateRecord(Path('file.txt'), [comp1], total_size=50, total_items=1, duplicated_size=50)
                 writer.write_duplicate_record(record1)
 
                 # Update with new duplicate
@@ -280,13 +281,14 @@ class ReportWriterTest(unittest.TestCase):
                 record2 = DuplicateRecord(
                     Path('file.txt'),
                     [comp1, comp2],
-                    100,  # total_size
-                    100   # duplicated_size
+                    total_size=100,
+                    total_items=2,
+                    duplicated_size=100
                 )
                 writer.write_duplicate_record(record2)
 
             # Verify the record was updated using ReportReader
-            with ReportReader(report_dir) as reader:
+            with ReportReader(report_dir, Path('.')) as reader:
                 retrieved = reader.read_duplicate_record(Path('file.txt'))
 
                 self.assertIsNotNone(retrieved)
@@ -311,11 +313,11 @@ class ReportWriterTest(unittest.TestCase):
                                             mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
                                             duplicated_size=100, duplicated_items=1,
                                             is_identical=True, is_superset=True)
-                    record = DuplicateRecord(Path(f'file{i}.txt'), [comp], 100, 100)
+                    record = DuplicateRecord(Path(f'file{i}.txt'), [comp], total_size=100, total_items=1, duplicated_size=100)
                     writer.write_duplicate_record(record)
 
             # Verify all records exist using ReportReader
-            with ReportReader(report_dir) as reader:
+            with ReportReader(report_dir, Path('.')) as reader:
                 all_records = list(reader.iterate_all_records())
 
                 # We should have exactly 3 records
@@ -1169,12 +1171,14 @@ class ReportReaderTest(unittest.TestCase):
                 record = DuplicateRecord(
                     Path('target/file.txt'),
                     [comparison],
-                    100, 100
+                    total_size=100,
+                    total_items=1,
+                    duplicated_size=100
                 )
                 writer.write_duplicate_record(record)
 
             # Read it back using ReportReader
-            with ReportReader(report_dir) as reader:
+            with ReportReader(report_dir, Path('.')) as reader:
                 retrieved = reader.read_duplicate_record(Path('target/file.txt'))
 
                 self.assertIsNotNone(retrieved)
@@ -1195,7 +1199,7 @@ class ReportReaderTest(unittest.TestCase):
             with ReportWriter(report_dir) as writer:
                 writer.create_report_directory()
 
-            with ReportReader(report_dir) as reader:
+            with ReportReader(report_dir, Path('.')) as reader:
                 retrieved = reader.read_duplicate_record(Path('nonexistent/file.txt'))
                 self.assertIsNone(retrieved)
 
@@ -1218,12 +1222,14 @@ class ReportReaderTest(unittest.TestCase):
                     record = DuplicateRecord(
                         Path(f'file{i}.txt'),
                         [comp],
-                        100, 100
+                        total_size=100,
+                        total_items=1,
+                        duplicated_size=100
                     )
                     writer.write_duplicate_record(record)
 
             # Iterate and verify
-            with ReportReader(report_dir) as reader:
+            with ReportReader(report_dir, Path('.')) as reader:
                 records = list(reader.iterate_all_records())
                 self.assertEqual(3, len(records))
 
@@ -1249,7 +1255,7 @@ class ReportReaderTest(unittest.TestCase):
             writer.write_manifest(manifest)
 
             # Read it back
-            reader = ReportReader(report_dir)
+            reader = ReportReader(report_dir, Path('.'))
             retrieved = reader.read_manifest()
 
             self.assertEqual('/path/to/archive', retrieved.archive_path)
@@ -1363,7 +1369,7 @@ class DescribeIntegrationTest(unittest.TestCase):
 
             # Use ReportReader to verify the report
             report_dir = get_report_directory_path(target_path)
-            with ReportReader(report_dir) as reader:
+            with ReportReader(report_dir, Path('.')) as reader:
                 # Read the record for the duplicate file
                 record = reader.read_duplicate_record(Path('target') / 'duplicate.txt')
 
@@ -1401,7 +1407,7 @@ class DescribeIntegrationTest(unittest.TestCase):
 
             # Use ReportReader to verify directory report
             report_dir = get_report_directory_path(target_dir)
-            with ReportReader(report_dir) as reader:
+            with ReportReader(report_dir, Path('.')) as reader:
                 # Read directory record
                 dir_record = reader.read_duplicate_record(Path('duplicate_dir'))
 

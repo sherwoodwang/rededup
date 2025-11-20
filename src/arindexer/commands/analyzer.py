@@ -452,66 +452,52 @@ class ImmediateResult(FileAnalysisResult):
     a consistent interface for accessing duplicate information, returning sensible defaults
     (empty list or zero) when no duplicates are found.
 
-    The relative_path represents the path to the analyzed item relative to the parent of the
+    The report_path represents the path to the analyzed item relative to the parent of the
     input path (the path that was passed to the analyzer). This allows consistent tracking
     of paths across both files and directories during analysis.
     """
 
     def __init__(
             self,
-            *,
-            relative_path: Path | None = None,
-            duplicate_record: 'DuplicateRecord | None' = None
+            report_path: Path,
+            duplicates: list[DuplicateMatch],
+            total_size: int,
+            total_items: int,
+            duplicated_size: int
     ):
         """Initialize an ImmediateResult.
 
-        Either relative_path or duplicate_record must be provided, but not both.
+        Args:
+            report_path: Path relative to the parent of the input path being analyzed
+            duplicates: List of DuplicateMatch objects for each duplicate found in the archive
+            total_size: Total size in bytes of all content within this path
+            total_items: Total count of items within this path
+            duplicated_size: Total size in bytes of content that has content-equivalent files in the archive
+        """
+        self.report_path = report_path
+        self.duplicates = duplicates
+        self.total_size = total_size
+        self.total_items = total_items
+        self.duplicated_size = duplicated_size
+        self.base_name = report_path.name
+
+    @classmethod
+    def from_duplicate_record(cls, duplicate_record: DuplicateRecord) -> 'ImmediateResult':
+        """Create an ImmediateResult from a DuplicateRecord.
 
         Args:
-            relative_path: Path relative to the parent of the input path being analyzed.
-                          Used when no duplicates are found or when creating an intermediate result.
-                          Must be provided if duplicate_record is None.
-            duplicate_record: Complete duplicate record with path and duplicate information.
-                            If provided, the relative_path is derived from this record.
-                            Must be provided if relative_path is None.
+            duplicate_record: Complete duplicate record with path and duplicate information
 
-        Raises:
-            ValueError: If neither or both arguments are provided, or if relative_path
-                       base name does not match duplicate_record path base name.
+        Returns:
+            ImmediateResult instance constructed from the duplicate record
         """
-        if relative_path is None and duplicate_record is None:
-            raise ValueError(
-                "Either relative_path or duplicate_record must be provided"
-            )
-        if relative_path is not None and duplicate_record is not None:
-            raise ValueError(
-                "Cannot provide both relative_path and duplicate_record"
-            )
-
-        if duplicate_record is not None:
-            self._path = duplicate_record.path
-            self.base_name = duplicate_record.path.name
-        else:
-            self._path = relative_path
-            self.base_name = relative_path.name
-
-        self._duplicate_record = duplicate_record
-
-    @property
-    def path(self) -> Path:
-        return self._duplicate_record.path if self._duplicate_record else self._path
-
-    @property
-    def duplicates(self) -> list[DuplicateMatch]:
-        return self._duplicate_record.duplicates if self._duplicate_record else []
-
-    @property
-    def total_size(self) -> int:
-        return self._duplicate_record.total_size if self._duplicate_record else 0
-
-    @property
-    def duplicated_size(self) -> int:
-        return self._duplicate_record.duplicated_size if self._duplicate_record else 0
+        return cls(
+            report_path=duplicate_record.path,
+            duplicates=duplicate_record.duplicates,
+            total_size=duplicate_record.total_size,
+            total_items=duplicate_record.total_items,
+            duplicated_size=duplicate_record.duplicated_size
+        )
 
 
 class DeferredResult(FileAnalysisResult):
@@ -521,17 +507,21 @@ class DeferredResult(FileAnalysisResult):
     immediately and must be deferred for comparison by their parent directory handler.
 
     Attributes:
-        base_name: Base name of the file or directory, deduced from relative_path
+        base_name: Base name of the file or directory, deduced from report_path
     """
 
-    def __init__(self, *, relative_path: Path):
+    def __init__(self, report_path: Path, total_size: int, total_items: int, duplicated_size: int):
         """Initialize a DeferredResult.
 
         Args:
-            relative_path: Path relative to the parent of the input path being analyzed.
-                          The base_name is derived from the name component of this path.
+            report_path: Path relative to the parent of the input path being analyzed.
+                        The base_name is derived from the name component of this path.
         """
-        self.base_name = relative_path.name
+        self.report_path = report_path
+        self.base_name = report_path.name
+        self.total_size = total_size
+        self.total_items = total_items
+        self.duplicated_size = duplicated_size
 
 
 class AnalyzeArgs(NamedTuple):
@@ -851,7 +841,7 @@ class AnalyzeProcessor:
         listener: DirectoryListener = self._listener_coordinator.register_directory(context)
 
         result_task: asyncio.Task[FileAnalysisResult] = listener.schedule_callback(
-            lambda results: self._analyze_directory_with_children(dir_path, results)
+            lambda results: self._analyze_directory_with_children(dir_path, context, results)
         )
 
         # Register this directory's result with its parent directory's listener
@@ -862,6 +852,7 @@ class AnalyzeProcessor:
     async def _analyze_directory_with_children(
             self,
             dir_path: Path,
+            context: FileContext,
             results: list[Any]
     ) -> FileAnalysisResult:
         """Analyze a directory after all its children have been processed.
@@ -870,20 +861,22 @@ class AnalyzeProcessor:
         for the directory that can be passed to its parent.
 
         Args:
-            dir_path: Absolute path to the directory being analyzed
+            dir_path: Path to the directory being analyzed (can be used directly from working directory)
+            context: File context for the directory being analyzed
             results: List of ImmediateResult or DeferredResult from child items
 
         Returns:
             ImmediateResult containing duplicate information for this directory
         """
-        # Verify dir_path is equal to or contained in _input_path
-        assert dir_path == self._input_path or self._input_path in dir_path.parents, \
-            f"dir_path {dir_path} must be equal to or contained in _input_path {self._input_path}"
+        logger.info("Analyzing directory: %s", context.relative_path)
 
-        # Calculate relative path from parent of input_path
-        relative_path: Path = dir_path.relative_to(self._input_path.parent)
-
-        logger.info("Analyzing directory: %s", relative_path)
+        # Accumulate totals from all child results
+        # total_size: sum of all child file sizes (whether duplicated or not)
+        # total_items: count of all child items (files and special files, not directories)
+        # duplicated_size: sum of child file sizes that have content-equivalent files in archive
+        total_size = 0
+        total_items = 0
+        duplicated_size = 0
 
         # Build map of candidate archive directories to their pending file comparisons
         # candidate_matches[archive_dir][base_name] = DuplicateMatch for file in archive_dir
@@ -891,11 +884,7 @@ class AnalyzeProcessor:
         deferred_items: set[str] = set()  # base names of deferred items
 
         for result in results:
-            if isinstance(result, ChildTaskException):
-                # Child task failed - this shouldn't happen for normal files, but handle it
-                # For directory duplicate detection, we'll skip failed children
-                continue
-            elif isinstance(result, ImmediateResult):
+            if isinstance(result, ImmediateResult):
                 # Extract parent directories from duplicates if this child has a record
                 for comparison in result.duplicates:
                     # Only process duplicates that match the current file name
@@ -910,13 +899,19 @@ class AnalyzeProcessor:
                             candidate_matches[parent_dir][result.base_name] = comparison
             elif isinstance(result, DeferredResult):
                 deferred_items.add(result.base_name)
+            else:
+                raise TypeError(f"Unexpected result type {type(result)}")
+
+            total_size += result.total_size
+            total_items += result.total_items
+            duplicated_size += result.duplicated_size
 
         # Early return or defer based on presence of candidate dirs and deferred items
         if not candidate_matches:
             if not deferred_items:
-                return ImmediateResult(relative_path=relative_path)
+                return ImmediateResult(context.relative_path, [], total_size, total_items, duplicated_size)
             else:
-                return DeferredResult(relative_path=relative_path)
+                return DeferredResult(context.relative_path, total_size, total_items, duplicated_size)
 
         # Compare this directory with each candidate archive directory
         metadata_comparisons: list[DuplicateMatch] = []
@@ -931,7 +926,7 @@ class AnalyzeProcessor:
 
             # Compare this candidate directory with the analyzed directory
             comparison = await self._compare_directory_with_candidate(
-                dir_path, candidate_dir, child_matches, deferred_items
+                dir_path, context, candidate_dir, child_matches, deferred_items
             )
 
             if comparison is not None:
@@ -939,40 +934,15 @@ class AnalyzeProcessor:
 
         # Return early if no matching directories were found
         if not metadata_comparisons:
-            return ImmediateResult(relative_path=relative_path)
-
-        # Calculate total_size and duplicated_size from all unique child files
-        # We need to reconstruct the set of all child files from candidate_matches
-        all_child_files: dict[str, ImmediateResult] = {}
-        for child_matches in candidate_matches.values():
-            for base_name in child_matches.keys():
-                if base_name not in all_child_files:
-                    # Find the original ImmediateResult for this child
-                    for result in results:
-                        if isinstance(result, ImmediateResult) and result.base_name == base_name:
-                            all_child_files[base_name] = result
-                            break
-
-        # Calculate total_size: sum of ALL child file sizes
-        total_size = 0
-        total_items = 0
-        for child_result in all_child_files.values():
-            total_size += child_result.total_size
-            total_items += 1  # Each child file counts as 1 item (directories count as 0, only files are in all_child_files)
-
-        # Calculate duplicated_size: sum of child files that have ANY duplicates (deduplicated)
-        duplicated_size = 0
-        for child_result in all_child_files.values():
-            if child_result.duplicates:
-                duplicated_size += child_result.duplicated_size
+            return ImmediateResult(context.relative_path, [], total_size, total_items, duplicated_size)
 
         # Create and write duplicate record
-        record = DuplicateRecord(relative_path, metadata_comparisons, total_size, total_items, duplicated_size)
+        record = DuplicateRecord(context.relative_path, metadata_comparisons, total_size, total_items, duplicated_size)
         self._writer.write_duplicate_record(record)
 
-        logger.info("Completed analyzing directory: %s", relative_path)
+        logger.info("Completed analyzing directory: %s", context.relative_path)
 
-        return ImmediateResult(duplicate_record=record)
+        return ImmediateResult.from_duplicate_record(record)
 
     def _compare_deferred_item(
             self,
@@ -1047,6 +1017,7 @@ class AnalyzeProcessor:
     async def _compare_directory_with_candidate(
             self,
             dir_path: Path,
+            context: FileContext,
             candidate_dir: Path,
             child_matches: dict[str, DuplicateMatch],
             deferred_items: set[str]
@@ -1054,7 +1025,8 @@ class AnalyzeProcessor:
         """Compare a directory with a candidate archive directory.
 
         Args:
-            dir_path: Path to the directory being analyzed
+            dir_path: Path to the directory being analyzed (can be used directly from working directory)
+            context: File context for the directory being analyzed
             candidate_dir: Relative path to the candidate archive directory
             child_matches: Map of base_name -> DuplicateMatch for files in candidate directory
             deferred_items: Set of base names for deferred items
@@ -1065,23 +1037,22 @@ class AnalyzeProcessor:
         """
         logger.info(
             "Comparing directory %s with candidate %s (%d files, %d deferred)",
-            dir_path, candidate_dir, len(child_matches), len(deferred_items)
+            context.relative_path, candidate_dir, len(child_matches), len(deferred_items)
         )
 
         if logger.isEnabledFor(logging.DEBUG):
             if child_matches:
                 sorted_child_names = sorted(child_matches.keys())
-                logger.debug("Child files for %s vs %s: %s", dir_path, candidate_dir, ', '.join(sorted_child_names))
+                logger.debug("Child files for %s vs %s: %s", context.relative_path, candidate_dir, ', '.join(sorted_child_names))
             if deferred_items:
                 sorted_deferred_names = sorted(deferred_items)
-                logger.debug("Deferred items for %s vs %s: %s", dir_path, candidate_dir, ', '.join(sorted_deferred_names))
+                logger.debug("Deferred items for %s vs %s: %s", context.relative_path, candidate_dir, ', '.join(sorted_deferred_names))
         full_candidate_path: Path = self._archive_path / candidate_dir
 
         # Track metadata matches using reducer
         reducer = MetadataMatchReducer(self._comparison_rule)
 
         # Check that regular files with duplicates have at least one in this candidate directory
-        files_matched: int = 0
         files_with_identical_duplicates: int = 0  # Files where duplicate is identical
         total_files_with_duplicates: int = len(child_matches)
 
@@ -1089,13 +1060,11 @@ class AnalyzeProcessor:
         comparison_rule: DuplicateMatchRule | None = None
 
         for base_name, matching_comparison in child_matches.items():
-            files_matched += 1
-
             # Validate that all children use the same comparison rule
             if matching_comparison.rule is not None:
                 if comparison_rule is not None and matching_comparison.rule != comparison_rule:
                     raise ValueError(
-                        f"Inconsistent comparison rules within directory {dir_path}: "
+                        f"Inconsistent comparison rules within directory {context.relative_path}: "
                         f"expected {self._comparison_rule} but found {matching_comparison.rule} for child {base_name}"
                     )
                 comparison_rule = matching_comparison.rule
@@ -1148,12 +1117,12 @@ class AnalyzeProcessor:
         has_extra_items: bool = len(extra_items) > 0
 
         # Verify at least some files matched before considering this a duplicate
-        if files_matched == 0:
+        if total_files_with_duplicates == 0:
             return None
 
         # Determine match type
         # is_superset: all analyzed files exist in candidate (may have extras)
-        is_superset: bool = files_matched == total_files_with_duplicates and deferred_items_match
+        is_superset: bool = deferred_items_match
 
         # For is_identical, first check structural requirements (content match, no extras)
         # Then use the comparison rule to determine if metadata matches
@@ -1162,7 +1131,7 @@ class AnalyzeProcessor:
                               files_with_identical_duplicates == total_files_with_duplicates)
 
         # Compare directory-level metadata and combine with aggregated child metadata
-        dir_stat: os.stat_result = dir_path.stat()
+        dir_stat: os.stat_result = context.stat
         dup_stat: os.stat_result = full_candidate_path.stat()
 
         # Aggregate directory-level metadata with child metadata
@@ -1188,7 +1157,7 @@ class AnalyzeProcessor:
         """
         logger.info("Handling file: %s", file_path)
 
-        file_task: asyncio.Task[FileAnalysisResult] = await throttler.schedule(self._analyze_file(file_path))
+        file_task: asyncio.Task[FileAnalysisResult] = await throttler.schedule(self._analyze_file(file_path, context))
         # Register this file's analysis result with its parent directory's listener
         self._listener_coordinator.register_child_with_parent(context, file_task)
 
@@ -1208,11 +1177,11 @@ class AnalyzeProcessor:
         relative_path: Path = file_path.relative_to(self._input_path.parent)
 
         future: asyncio.Future[FileAnalysisResult] = asyncio.Future()
-        future.set_result(DeferredResult(relative_path=relative_path))
+        future.set_result(DeferredResult(relative_path, context.stat.st_size, 1, 0))
         # Register this deferred item with its parent directory's listener
         self._listener_coordinator.register_child_with_parent(context, future)
 
-    async def _analyze_file(self, file_path: Path) -> ImmediateResult:
+    async def _analyze_file(self, file_path: Path, context: FileContext) -> ImmediateResult:
         """Analyze a single file and write duplicate record to database if duplicates found.
 
         Args:
@@ -1221,14 +1190,7 @@ class AnalyzeProcessor:
         Returns:
             ImmediateResult containing all duplicate information
         """
-        # Verify file_path is equal to or contained in _input_path
-        assert file_path == self._input_path or self._input_path in file_path.parents, \
-            f"file_path {file_path} must be equal to or contained in _input_path {self._input_path}"
-
-        # Calculate relative path from parent of input_path
-        relative_path: Path = file_path.relative_to(self._input_path.parent)
-
-        logger.info("Analyzing file: %s", relative_path)
+        logger.info("Analyzing file: %s", context.relative_path)
 
         # Calculate digest
         digest: bytes = await self._calculate_digest(file_path)
@@ -1245,11 +1207,10 @@ class AnalyzeProcessor:
 
         if not duplicates_found:
             # No duplicates found, return immediate result with empty list
-            return ImmediateResult(relative_path=relative_path)
+            return ImmediateResult(context.relative_path, [], context.stat.st_size, 1, 0)
 
         # Get metadata for the analyzed file
-        analyzed_stat: os.stat_result = file_path.stat()
-        file_size: int = analyzed_stat.st_size
+        file_size: int = context.stat.st_size
 
         # Compare metadata with each duplicate
         metadata_comparisons: list[DuplicateMatch] = []
@@ -1258,12 +1219,12 @@ class AnalyzeProcessor:
             dup_stat: os.stat_result = full_dup_path.stat()
 
             # Compare metadata attributes
-            mtime_match: bool = analyzed_stat.st_mtime_ns == dup_stat.st_mtime_ns
-            atime_match: bool = analyzed_stat.st_atime_ns == dup_stat.st_atime_ns
-            ctime_match: bool = analyzed_stat.st_ctime_ns == dup_stat.st_ctime_ns
-            mode_match: bool = analyzed_stat.st_mode == dup_stat.st_mode
-            owner_match: bool = analyzed_stat.st_uid == dup_stat.st_uid
-            group_match: bool = analyzed_stat.st_gid == dup_stat.st_gid
+            mtime_match: bool = context.stat.st_mtime_ns == dup_stat.st_mtime_ns
+            atime_match: bool = context.stat.st_atime_ns == dup_stat.st_atime_ns
+            ctime_match: bool = context.stat.st_ctime_ns == dup_stat.st_ctime_ns
+            mode_match: bool = context.stat.st_mode == dup_stat.st_mode
+            owner_match: bool = context.stat.st_uid == dup_stat.st_uid
+            group_match: bool = context.stat.st_gid == dup_stat.st_gid
 
             # For files: is_identical means all metadata matches (content already verified)
             # is_superset equals is_identical for files
@@ -1292,13 +1253,13 @@ class AnalyzeProcessor:
         duplicated_size: int = file_size
 
         # Create and write duplicate record
-        record = DuplicateRecord(relative_path, metadata_comparisons, total_size, total_items, duplicated_size)
+        record = DuplicateRecord(context.relative_path, metadata_comparisons, total_size, total_items, duplicated_size)
         self._writer.write_duplicate_record(record)
 
-        logger.info("Completed analyzing file: %s", relative_path)
+        logger.info("Completed analyzing file: %s", context.relative_path)
 
         # Return immediate result with the duplicate record
-        return ImmediateResult(duplicate_record=record)
+        return ImmediateResult.from_duplicate_record(record)
 
 
 async def do_analyze(
