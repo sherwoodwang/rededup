@@ -1395,11 +1395,13 @@ class DescribeOptions:
         sort_by: Sorting criterion for duplicates - 'size', 'items', 'identical', or 'path'
         sort_children: Sorting criterion for directory children - 'dup-size', 'dup-items', 'total-size', or 'name'
         use_bytes: If True, show sizes in bytes instead of human-readable format
+        show_details: If True, show report metadata (Report, Analyzed, Archive, Timestamp)
     """
     limit: int | None = 1
     sort_by: str = 'size'
     sort_children: str = 'dup-size'
     use_bytes: bool = False
+    show_details: bool = False
 
 
 def do_describe(target_path: Path, options: DescribeOptions | None = None) -> None:
@@ -1434,12 +1436,13 @@ def do_describe(target_path: Path, options: DescribeOptions | None = None) -> No
         with ReportReader(report_dir, analyzed_path) as reader:
             manifest = reader.read_manifest()
 
-            # Show report metadata
-            print(f"Report: {report_dir}")
-            print(f"Analyzed: {analyzed_path}")
-            print(f"Archive: {manifest.archive_path}")
-            print(f"Timestamp: {manifest.timestamp}")
-            print()
+            # Show report metadata if requested
+            if options.show_details:
+                print(f"Report: {report_dir}")
+                print(f"Analyzed: {analyzed_path}")
+                print(f"Archive: {manifest.archive_path}")
+                print(f"Timestamp: {manifest.timestamp}")
+                print()
 
             # Calculate relative path within the analyzed directory
             if target_path == analyzed_path:
@@ -1513,10 +1516,12 @@ class DescribeFormatter(ABC):
         dup_size_str = str(record.duplicated_size) if self.options.use_bytes else format_size(record.duplicated_size)
         unique_size_str = str(unique_size) if self.options.use_bytes else format_size(unique_size)
 
-        print(f"{item_type}: {self.relative_path}")
+        if self.options.show_details:
+            print(f"{item_type}: {self.relative_path}")
         print(f"Size: {total_size_str} (duplicated: {dup_size_str}, unique: {unique_size_str})")
         print(f"Items: {record.total_items} (duplicated: {record.duplicated_items}, unique: {unique_items})")
-        print(f"Duplicates: {len(record.duplicates)}")
+        print()
+        print(f"Duplicates:")
         print()
 
     @abstractmethod
@@ -1639,7 +1644,7 @@ class DescribeFormatter(ABC):
         # Show count if not all duplicates are displayed
         if total_count is not None:
             print()
-            print(f"Showing {len(displayed_duplicates)} of {total_count} duplicates")
+            print(f"  Showing {len(displayed_duplicates)} of {total_count} duplicates")
 
     def _print_details(self, record: DuplicateRecord) -> None:
         """Print additional details for the item.

@@ -219,6 +219,10 @@ def archive_indexer():
         '--bytes',
         action='store_true',
         help='Show sizes in bytes instead of human-readable format (e.g., 1048576 instead of 1.00 MB)')
+    parser_describe.add_argument(
+        '--details',
+        action='store_true',
+        help='Show detailed metadata including Report, Analyzed, Archive, Timestamp, Directory/File type, and Duplicates count')
     parser_describe.set_defaults(method=_describe, create=False)
 
     parser_inspect = subparsers.add_parser(
@@ -357,7 +361,8 @@ def _describe(output: StandardOutput, args):
         limit=limit,
         sort_by=args.sort_by,
         sort_children=args.sort_children,
-        use_bytes=args.bytes
+        use_bytes=args.bytes,
+        show_details=args.details
     )
 
     do_describe(path, options)
