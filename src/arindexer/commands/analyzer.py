@@ -856,6 +856,40 @@ class AnalyzeProcessor:
 
         logger.info("Completed handling directory: %s", dir_path)
 
+    async def _handle_file(self, file_path: Path, context: FileContext, throttler: Any) -> None:
+        """Handle a file by scheduling analysis.
+
+        Args:
+            file_path: Path to the file
+            context: File context for the file
+            throttler: Throttler for concurrency control
+        """
+        logger.info("Handling file: %s", file_path)
+
+        file_task: asyncio.Task[FileAnalysisResult] = await throttler.schedule(self._analyze_file(file_path, context))
+        # Register this file's analysis result with its parent directory's listener
+        self._listener_coordinator.register_child_with_parent(context, file_task)
+
+        logger.info("Completed handling file: %s", file_path)
+
+    async def _defer_for_parent_directory(self, file_path: Path, context: FileContext) -> None:
+        """Defer a non-regular file for comparison by its parent directory handler.
+
+        Non-regular files are not analyzed immediately but are registered with their parent
+        directory so that _analyze_directory_with_children can process them when necessary.
+
+        Args:
+            file_path: Absolute path to the file being deferred
+            context: File context for the file
+        """
+        # Calculate relative path from parent of input_path
+        relative_path: Path = file_path.relative_to(self._input_path.parent)
+
+        future: asyncio.Future[FileAnalysisResult] = asyncio.Future()
+        future.set_result(DeferredResult(relative_path, context.stat.st_size, 1, 0))
+        # Register this deferred item with its parent directory's listener
+        self._listener_coordinator.register_child_with_parent(context, future)
+
     async def _analyze_directory_with_children(
             self,
             dir_path: Path,
@@ -1112,40 +1146,6 @@ class AnalyzeProcessor:
             non_identical=all_items != candidate_items,
             non_superset=(not all_items.issubset(candidate_items))
         )
-
-    async def _handle_file(self, file_path: Path, context: FileContext, throttler: Any) -> None:
-        """Handle a file by scheduling analysis.
-
-        Args:
-            file_path: Path to the file
-            context: File context for the file
-            throttler: Throttler for concurrency control
-        """
-        logger.info("Handling file: %s", file_path)
-
-        file_task: asyncio.Task[FileAnalysisResult] = await throttler.schedule(self._analyze_file(file_path, context))
-        # Register this file's analysis result with its parent directory's listener
-        self._listener_coordinator.register_child_with_parent(context, file_task)
-
-        logger.info("Completed handling file: %s", file_path)
-
-    async def _defer_for_parent_directory(self, file_path: Path, context: FileContext) -> None:
-        """Defer a non-regular file for comparison by its parent directory handler.
-
-        Non-regular files are not analyzed immediately but are registered with their parent
-        directory so that _analyze_directory_with_children can process them when necessary.
-
-        Args:
-            file_path: Absolute path to the file being deferred
-            context: File context for the file
-        """
-        # Calculate relative path from parent of input_path
-        relative_path: Path = file_path.relative_to(self._input_path.parent)
-
-        future: asyncio.Future[FileAnalysisResult] = asyncio.Future()
-        future.set_result(DeferredResult(relative_path, context.stat.st_size, 1, 0))
-        # Register this deferred item with its parent directory's listener
-        self._listener_coordinator.register_child_with_parent(context, future)
 
     async def _analyze_file(self, file_path: Path, context: FileContext) -> ImmediateResult:
         """Analyze a single file and write duplicate record to database if duplicates found.
