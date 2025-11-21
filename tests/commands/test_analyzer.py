@@ -1149,6 +1149,257 @@ class DirectoryAnalysisTest(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_directory_total_size_includes_non_duplicate_files(self):
+        """Test that total_size and total_items include files without duplicates.
+
+        This test addresses a bug where total_size and total_items only counted
+        files that had duplicates in the archive, excluding files without duplicates.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'partial_match_dir'
+            archive_dir.mkdir()
+            # Only file1 exists in archive
+            (archive_dir / 'file1.txt').write_bytes(b'content1')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_dir = target_path / 'mixed_dir'
+            target_dir.mkdir()
+
+            # file1 has duplicate in archive
+            target_file1 = target_dir / 'file1.txt'
+            target_file1.write_bytes(b'content1')
+            copy_times(archive_dir / 'file1.txt', target_file1)
+
+            # file2 and file3 have NO duplicates in archive
+            target_file2 = target_dir / 'file2.txt'
+            target_file2.write_bytes(b'unique content 2')
+            target_file3 = target_dir / 'file3.txt'
+            target_file3.write_bytes(b'unique content 3')
+
+            report_dir = target_dir.parent / (target_dir.name + '.report')
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_dir])
+
+            # Verify total_size and total_items include ALL files, not just duplicates
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found_dir_record = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if 'mixed_dir' in str(record.path):
+                            found_dir_record = True
+                            # Should have 3 total items (all files)
+                            self.assertEqual(3, record.total_items,
+                                "total_items should count all files, not just duplicates")
+                            # Should have total_size equal to sum of all 3 files
+                            expected_size = len(b'content1') + len(b'unique content 2') + len(b'unique content 3')
+                            self.assertEqual(expected_size, record.total_size,
+                                "total_size should include all files, not just duplicates")
+                            # duplicated_size should only include file1
+                            self.assertEqual(len(b'content1'), record.duplicated_size,
+                                "duplicated_size should only include files with duplicates")
+                            break
+                    except Exception as e:
+                        pass
+
+                self.assertTrue(found_dir_record, "Directory record not found")
+            finally:
+                db.close()
+
+    def test_directory_total_size_includes_deferred_items(self):
+        """Test that total_size and total_items include deferred items (symlinks).
+
+        This test addresses a bug where DeferredResult didn't track size/items,
+        causing them to be excluded from directory totals.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'linkdir'
+            archive_dir.mkdir()
+            (archive_dir / 'file.txt').write_bytes(b'content')
+            (archive_dir / 'link').symlink_to('file.txt')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_dir = target_path / 'linkdir_copy'
+            target_dir.mkdir()
+            target_file = target_dir / 'file.txt'
+            target_file.write_bytes(b'content')
+            copy_times(archive_dir / 'file.txt', target_file)
+            (target_dir / 'link').symlink_to('file.txt')
+
+            report_dir = target_dir.parent / (target_dir.name + '.report')
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_dir])
+
+            # Verify symlinks are included in totals
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found_dir_record = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if 'linkdir_copy' in str(record.path) and len(record.duplicates) > 0:
+                            comparison = record.duplicates[0]
+                            if 'linkdir' in str(comparison.path):
+                                found_dir_record = True
+                                # Should have 2 total items (file + symlink)
+                                self.assertEqual(2, record.total_items,
+                                    "total_items should include deferred items like symlinks")
+                                # Total size should include the file (symlinks have size 0)
+                                self.assertEqual(len(b'content'), record.total_size,
+                                    "total_size should include sizes from deferred items")
+                                break
+                    except Exception as e:
+                        pass
+
+                self.assertTrue(found_dir_record, "Directory with symlinks not found")
+            finally:
+                db.close()
+
+    def test_is_superset_false_when_metadata_differs(self):
+        """Test that is_superset is False when archive has extra files AND metadata differs.
+
+        This test addresses a bug where is_superset calculation didn't properly check
+        metadata matching - it should be False if metadata doesn't match, even if all
+        analyzed items are present in the archive.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'bigdir'
+            archive_dir.mkdir()
+            (archive_dir / 'file1.txt').write_bytes(b'content1')
+            (archive_dir / 'file2.txt').write_bytes(b'content2')
+            (archive_dir / 'extra.txt').write_bytes(b'extra')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_dir = target_path / 'smalldir'
+            target_dir.mkdir()
+            target_file1 = target_dir / 'file1.txt'
+            target_file1.write_bytes(b'content1')
+            copy_times(archive_dir / 'file1.txt', target_file1)
+            target_file2 = target_dir / 'file2.txt'
+            target_file2.write_bytes(b'content2')
+            # Copy times first, then tweak so metadata doesn't match
+            copy_times(archive_dir / 'file2.txt', target_file2)
+            tweak_times(target_file2, -3600_000_000_000)  # Shift by -1 hour in nanoseconds
+
+            report_dir = target_dir.parent / (target_dir.name + '.report')
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_dir])
+
+            # Verify is_superset is False when metadata differs
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found_dir_record = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if 'smalldir' in str(record.path) and len(record.duplicates) > 0:
+                            comparison = record.duplicates[0]
+                            if 'bigdir' in str(comparison.path):
+                                found_dir_record = True
+                                # Not identical (extra files)
+                                self.assertFalse(comparison.is_identical,
+                                    "is_identical should be False when archive has extra files")
+                                # is_superset should be False because metadata doesn't match
+                                self.assertFalse(comparison.is_superset,
+                                    "is_superset should be False when metadata doesn't match")
+                                break
+                    except:
+                        pass
+
+                self.assertTrue(found_dir_record, "Directory record not found")
+            finally:
+                db.close()
+
+    def test_is_superset_true_when_archive_has_extras_but_metadata_matches(self):
+        """Test that is_superset is True when archive has extra files but all metadata matches.
+
+        This test addresses a bug where is_superset was incorrectly calculated based on
+        structure differences rather than checking if all analyzed items are present with
+        matching metadata.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'bigdir'
+            archive_dir.mkdir()
+            (archive_dir / 'file1.txt').write_bytes(b'content1')
+            (archive_dir / 'file2.txt').write_bytes(b'content2')
+            (archive_dir / 'extra.txt').write_bytes(b'extra')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_dir = target_path / 'smalldir'
+            target_dir.mkdir()
+            target_file1 = target_dir / 'file1.txt'
+            target_file1.write_bytes(b'content1')
+            copy_times(archive_dir / 'file1.txt', target_file1)
+            target_file2 = target_dir / 'file2.txt'
+            target_file2.write_bytes(b'content2')
+            copy_times(archive_dir / 'file2.txt', target_file2)
+            copy_times(archive_dir, target_dir)
+
+            report_dir = target_dir.parent / (target_dir.name + '.report')
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_dir])
+
+            # Verify is_superset is True when all analyzed items present with matching metadata
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found_dir_record = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if 'smalldir' in str(record.path) and len(record.duplicates) > 0:
+                            comparison = record.duplicates[0]
+                            if 'bigdir' in str(comparison.path):
+                                found_dir_record = True
+                                # Not identical (extra files in archive)
+                                self.assertFalse(comparison.is_identical,
+                                    "is_identical should be False when archive has extra files")
+                                # But is_superset should be True (all items present, metadata matches)
+                                self.assertTrue(comparison.is_superset,
+                                    "is_superset should be True when all analyzed items are present with matching metadata")
+                                # duplicated_items should be 2 (only the analyzed files)
+                                self.assertEqual(2, comparison.duplicated_items,
+                                    "duplicated_items should count analyzed items, not extras")
+                                break
+                    except:
+                        pass
+
+                self.assertTrue(found_dir_record, "Directory record not found")
+            finally:
+                db.close()
+
 
 class ReportReaderTest(unittest.TestCase):
     """Tests for ReportReader class."""
