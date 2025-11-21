@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 from ..utils.processor import Processor
 from ..utils.varint import encode_varint, decode_varint
-from ..utils.directory_listener import DirectoryListenerCoordinator, DirectoryListener, ChildTaskException
+from ..utils.directory_listener import DirectoryListenerCoordinator, DirectoryListener
 from ..utils.walker import FileContext
 from ..store.archive_store import ArchiveStore
 
@@ -349,24 +349,51 @@ class DuplicateRecord:
                    Each DuplicateMatch contains the path and metadata comparison results.
         total_size: Total size in bytes of all content within this path.
                    For files: the file size.
-                   For directories: sum of all child file sizes (whether or not they have duplicates).
+                   For directories: sum of all descendant file sizes, aggregated recursively from child results
+                                   (whether or not they have duplicates).
         total_items: Total count of items within this path, using the same counting as duplicated_items.
                     For files: 1 (the file itself).
-                    For directories: count of all child items (counted the same way as duplicated_items:
+                    For directories: count of all descendant items, aggregated recursively from child results
+                                    (counted the same way as duplicated_items:
                                     regular files count as 1, special files count as 1, directories count as 0).
         duplicated_size: Total size in bytes of this analyzed file/directory's content that
                         has content-equivalent files in the archive. This is the deduplicated size - each
                         file is counted once regardless of how many content-equivalent files exist in the archive.
                         For files: the file size (if content-equivalent files exist in the archive).
-                        For directories: sum of all child file sizes that have any content-equivalent files.
+                        For directories: sum of all descendant file sizes that have any content-equivalent files,
+                                       aggregated recursively from child results across all archive paths
+                                       (simple sum without requiring matching files to be at the same location
+                                       in any hierarchy).
 
                         IMPORTANT: Semantic difference from DuplicateMatch.duplicated_size:
                         - DuplicateRecord.duplicated_size: Global deduplicated size. Each file in the analyzed
                           path is counted once, regardless of how many content-equivalent files exist across
-                          all archive paths.
+                          all archive paths. This is a simple sum of duplicated_size from all child results,
+                          without structural requirements.
                         - DuplicateMatch.duplicated_size: Localized size for a specific archive path.
                           When a file in the analyzed path has multiple content-equivalent files in different
                           archive directories, each DuplicateMatch counts that file's size independently.
+                          For directories, only includes files that exist at the same relative location
+                          within the specific archive directory's hierarchy (hierarchy must match).
+        duplicated_items: Total count of items within this analyzed file/directory's content that
+                         have content-equivalent files in the archive. This is the deduplicated count - each
+                         item is counted once regardless of how many content-equivalent files exist in the archive.
+                         For files: 1 (if content-equivalent files exist in the archive).
+                         For directories: count of all descendant items that have any content-equivalent files,
+                                        aggregated recursively from child results across all archive paths
+                                        (simple sum without requiring matching items to be at the same location
+                                        in any hierarchy).
+
+                         IMPORTANT: Semantic difference from DuplicateMatch.duplicated_items:
+                         - DuplicateRecord.duplicated_items: Global deduplicated count. Each item in the analyzed
+                           path is counted once, regardless of how many content-equivalent files exist across
+                           all archive paths. This is a simple sum of duplicated_items from all child results,
+                           without structural requirements.
+                         - DuplicateMatch.duplicated_items: Localized count for a specific archive path.
+                           When an item in the analyzed path has multiple content-equivalent files in different
+                           archive directories, each DuplicateMatch counts that item independently.
+                           For directories, only includes items that exist at the same relative location
+                           within the specific archive directory's hierarchy (hierarchy must match).
     """
 
     def __init__(
@@ -375,18 +402,20 @@ class DuplicateRecord:
             duplicates: list[DuplicateMatch] | None = None,
             total_size: int = 0,
             total_items: int = 0,
-            duplicated_size: int = 0):
+            duplicated_size: int = 0,
+            duplicated_items: int = 0):
         self.path = path
         self.duplicates: list[DuplicateMatch] = duplicates or []
         self.total_size: int = total_size
         self.total_items: int = total_items
         self.duplicated_size: int = duplicated_size
+        self.duplicated_items: int = duplicated_items
 
     def to_msgpack(self) -> bytes:
         """Serialize to msgpack format for storage.
 
         Returns:
-            Msgpack-encoded bytes containing [path_components, duplicate_data_list, total_size, total_items, duplicated_size]
+            Msgpack-encoded bytes containing [path_components, duplicate_data_list, total_size, total_items, duplicated_size, duplicated_items]
             where duplicate_data_list is a list of [path_components, mtime_match, atime_match, ctime_match, mode_match,
             owner_match, group_match, duplicated_size, duplicated_items, is_identical, is_superset]
         """
@@ -409,7 +438,7 @@ class DuplicateRecord:
                 comparison.is_superset
             ])
 
-        return msgpack.dumps([path_components, duplicate_data, self.total_size, self.total_items, self.duplicated_size])
+        return msgpack.dumps([path_components, duplicate_data, self.total_size, self.total_items, self.duplicated_size, self.duplicated_items])
 
     @classmethod
     def from_msgpack(cls, data: bytes) -> 'DuplicateRecord':
@@ -422,7 +451,7 @@ class DuplicateRecord:
             DuplicateRecord instance
         """
         decoded = msgpack.loads(data)
-        path_components, duplicate_data, total_size, total_items, duplicated_size = decoded
+        path_components, duplicate_data, total_size, total_items, duplicated_size, duplicated_items = decoded
 
         path = Path(*path_components)
 
@@ -430,18 +459,18 @@ class DuplicateRecord:
 
         for dup_data in duplicate_data:
             dup_path_components, mtime_match, atime_match, ctime_match, mode_match, owner_match, group_match, \
-                dup_duplicated_size, duplicated_items, is_identical, is_superset = dup_data
+                dup_duplicated_size, dup_duplicated_items, is_identical, is_superset = dup_data
             dup_path = Path(*dup_path_components)
             comparison = DuplicateMatch(
                 dup_path,
                 mtime_match=mtime_match, atime_match=atime_match, ctime_match=ctime_match, mode_match=mode_match,
                 owner_match=owner_match, group_match=group_match,
-                duplicated_size=dup_duplicated_size, duplicated_items=duplicated_items,
+                duplicated_size=dup_duplicated_size, duplicated_items=dup_duplicated_items,
                 is_identical=is_identical, is_superset=is_superset
             )
             duplicates.append(comparison)
 
-        return cls(path, duplicates, total_size, total_items, duplicated_size)
+        return cls(path, duplicates, total_size, total_items, duplicated_size, duplicated_items)
 
 
 class FileAnalysisResult(ABC):
@@ -470,7 +499,8 @@ class ImmediateResult(FileAnalysisResult):
             duplicates: list[DuplicateMatch],
             total_size: int,
             total_items: int,
-            duplicated_size: int
+            duplicated_size: int,
+            duplicated_items: int
     ):
         """Initialize an ImmediateResult.
 
@@ -480,12 +510,14 @@ class ImmediateResult(FileAnalysisResult):
             total_size: Total size in bytes of all content within this path
             total_items: Total count of items within this path
             duplicated_size: Total size in bytes of content that has content-equivalent files in the archive
+            duplicated_items: Total count of items that have content-equivalent files in the archive
         """
         self.report_path = report_path
         self.duplicates = duplicates
         self.total_size = total_size
         self.total_items = total_items
         self.duplicated_size = duplicated_size
+        self.duplicated_items = duplicated_items
         self.base_name = report_path.name
 
     @classmethod
@@ -503,7 +535,8 @@ class ImmediateResult(FileAnalysisResult):
             duplicates=duplicate_record.duplicates,
             total_size=duplicate_record.total_size,
             total_items=duplicate_record.total_items,
-            duplicated_size=duplicate_record.duplicated_size
+            duplicated_size=duplicate_record.duplicated_size,
+            duplicated_items=duplicate_record.duplicated_items
         )
 
 
@@ -517,18 +550,23 @@ class DeferredResult(FileAnalysisResult):
         base_name: Base name of the file or directory, deduced from report_path
     """
 
-    def __init__(self, report_path: Path, total_size: int, total_items: int, duplicated_size: int):
+    def __init__(self, report_path: Path, total_size: int, total_items: int, duplicated_size: int, duplicated_items: int):
         """Initialize a DeferredResult.
 
         Args:
             report_path: Path relative to the parent of the input path being analyzed.
                         The base_name is derived from the name component of this path.
+            total_size: Total size in bytes
+            total_items: Total count of items
+            duplicated_size: Total duplicated size in bytes
+            duplicated_items: Total count of duplicated items
         """
         self.report_path = report_path
         self.base_name = report_path.name
         self.total_size = total_size
         self.total_items = total_items
         self.duplicated_size = duplicated_size
+        self.duplicated_items = duplicated_items
 
 
 class AnalyzeArgs(NamedTuple):
@@ -886,7 +924,7 @@ class AnalyzeProcessor:
         relative_path: Path = file_path.relative_to(self._input_path.parent)
 
         future: asyncio.Future[FileAnalysisResult] = asyncio.Future()
-        future.set_result(DeferredResult(relative_path, context.stat.st_size, 1, 0))
+        future.set_result(DeferredResult(relative_path, context.stat.st_size, 1, 0, 0))
         # Register this deferred item with its parent directory's listener
         self._listener_coordinator.register_child_with_parent(context, future)
 
@@ -913,16 +951,21 @@ class AnalyzeProcessor:
 
         # Accumulate totals from all child results
         # total_size: sum of all child file sizes (whether duplicated or not)
-        # total_items: count of all child items (files and special files, not directories)
+        # total_items: count of all child items, including nested ones (files and special files, not directories)
         # duplicated_size: sum of child file sizes that have content-equivalent files in archive
+        # duplicated_items: count of child items that have content-equivalent files in archive
         total_size = 0
+        total_items = 0
         duplicated_size = 0
-        all_items: set[str] = set()
+        duplicated_items = 0
 
         # Build map of candidate archive directories to their pending file comparisons
         # candidate_matches[archive_dir][base_name] = DuplicateMatch for file in archive_dir
         candidate_matches: dict[Path, dict[str, DuplicateMatch]] = {}
-        deferred_items: set[str] = set()  # base names of deferred items
+        # base names of deferred items
+        deferred_items: set[str] = set()
+        # all base names of child items that are directly under this directory
+        all_items: set[str] = set()
 
         for result in results:
             if isinstance(result, ImmediateResult):
@@ -944,15 +987,17 @@ class AnalyzeProcessor:
                 raise TypeError(f"Unexpected result type {type(result)}")
 
             total_size += result.total_size
+            total_items += result.total_items
             duplicated_size += result.duplicated_size
+            duplicated_items += result.duplicated_items
             all_items.add(result.base_name)
 
         # Early return or defer based on presence of candidate dirs and deferred items
         if not candidate_matches:
             if not deferred_items:
-                return ImmediateResult(context.relative_path, [], total_size, len(all_items), duplicated_size)
+                return ImmediateResult(context.relative_path, [], total_size, total_items, duplicated_size, duplicated_items)
             else:
-                return DeferredResult(context.relative_path, total_size, len(all_items), duplicated_size)
+                return DeferredResult(context.relative_path, total_size, total_items, duplicated_size, duplicated_items)
 
         # Compare this directory with each candidate archive directory
         metadata_comparisons: list[DuplicateMatch] = []
@@ -968,11 +1013,11 @@ class AnalyzeProcessor:
 
         # Return early if no matching directories were found
         if not metadata_comparisons:
-            return ImmediateResult(context.relative_path, [], total_size, len(all_items), duplicated_size)
+            return ImmediateResult(context.relative_path, [], total_size, total_items, duplicated_size, duplicated_items)
 
         # Create and write duplicate record
         record = DuplicateRecord(
-            context.relative_path, metadata_comparisons, total_size, len(all_items), duplicated_size)
+            context.relative_path, metadata_comparisons, total_size, total_items, duplicated_size, duplicated_items)
         self._writer.write_duplicate_record(record)
 
         logger.info("Completed analyzing directory: %s", context.relative_path)
@@ -1173,7 +1218,7 @@ class AnalyzeProcessor:
 
         if not duplicates_found:
             # No duplicates found, return immediate result with empty list
-            return ImmediateResult(context.relative_path, [], context.stat.st_size, 1, 0)
+            return ImmediateResult(context.relative_path, [], context.stat.st_size, 1, 0, 0)
 
         # Get metadata for the analyzed file
         file_size: int = context.stat.st_size
@@ -1214,12 +1259,10 @@ class AnalyzeProcessor:
         # total_size: size of this file
         # duplicated_size: size of this file (since it has duplicates)
         # total_items: 1 (the file itself)
-        total_size: int = file_size
-        total_items: int = 1
-        duplicated_size: int = file_size
+        # duplicated_items: 1 (the file itself, since it has duplicates)
 
         # Create and write duplicate record
-        record = DuplicateRecord(context.relative_path, metadata_comparisons, total_size, total_items, duplicated_size)
+        record = DuplicateRecord(context.relative_path, metadata_comparisons, file_size, 1, file_size, 1)
         self._writer.write_duplicate_record(record)
 
         logger.info("Completed analyzing file: %s", context.relative_path)
@@ -1463,13 +1506,16 @@ class DescribeFormatter(ABC):
             record: DuplicateRecord for the item
         """
         item_type = self._get_item_type()
+        unique_size = record.total_size - record.duplicated_size
+        unique_items = record.total_items - record.duplicated_items
+
         total_size_str = str(record.total_size) if self.options.use_bytes else format_size(record.total_size)
         dup_size_str = str(record.duplicated_size) if self.options.use_bytes else format_size(record.duplicated_size)
+        unique_size_str = str(unique_size) if self.options.use_bytes else format_size(unique_size)
 
         print(f"{item_type}: {self.relative_path}")
-        print(f"Size: {total_size_str}")
-        print(f"Duplicated size: {dup_size_str}")
-        print(f"Items: {record.total_items}")
+        print(f"Size: {total_size_str} (duplicated: {dup_size_str}, unique: {unique_size_str})")
+        print(f"Items: {record.total_items} (duplicated: {record.duplicated_items}, unique: {unique_items})")
         print(f"Duplicates: {len(record.duplicates)}")
         print()
 
@@ -1675,8 +1721,9 @@ class DirectoryDescribeFormatter(DescribeFormatter):
             child_record = self.reader.read_duplicate_record(child_relative_path)
 
             if child_record is None:
-                # Child exists on disk but not in report
-                total_size_str = "0" if self.options.use_bytes else "0 B"
+                # Child exists on disk but not in report (no duplicates found)
+                # Total size is not available in report, but dup size is known to be 0
+                total_size_str = "-"
                 dup_size_str = "0" if self.options.use_bytes else "0 B"
                 rows_data.append((child_name, is_dir, 0, 0, 0, False, type_str, total_size_str, dup_size_str, "0", "No"))
             elif child_record.duplicates:

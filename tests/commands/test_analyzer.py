@@ -135,13 +135,17 @@ class DuplicateRecordTest(unittest.TestCase):
             path=Path('target/file.txt'),
             duplicates=[comparison1, comparison2],
             total_size=200,
-            duplicated_size=200
+            total_items=1,
+            duplicated_size=200,
+            duplicated_items=1
         )
 
         self.assertEqual(Path('target/file.txt'), record.path)
         self.assertEqual(2, len(record.duplicates))
         self.assertEqual(200, record.total_size)
+        self.assertEqual(1, record.total_items)
         self.assertEqual(200, record.duplicated_size)
+        self.assertEqual(1, record.duplicated_items)
         self.assertEqual(Path('dup1.txt'), record.duplicates[0].path)
         self.assertEqual(Path('dup2.txt'), record.duplicates[1].path)
 
@@ -167,7 +171,9 @@ class DuplicateRecordTest(unittest.TestCase):
             path=Path('target/file.txt'),
             duplicates=[comparison],
             total_size=512,
-            duplicated_size=512
+            total_items=1,
+            duplicated_size=512,
+            duplicated_items=1
         )
 
         # Serialize and deserialize
@@ -177,7 +183,9 @@ class DuplicateRecordTest(unittest.TestCase):
         # Verify all fields
         self.assertEqual(original.path, deserialized.path)
         self.assertEqual(original.total_size, deserialized.total_size)
+        self.assertEqual(original.total_items, deserialized.total_items)
         self.assertEqual(original.duplicated_size, deserialized.duplicated_size)
+        self.assertEqual(original.duplicated_items, deserialized.duplicated_items)
         self.assertEqual(len(original.duplicates), len(deserialized.duplicates))
 
         orig_comp = original.duplicates[0]
@@ -207,7 +215,9 @@ class DuplicateRecordTest(unittest.TestCase):
             path=Path('target/also/deep/nested/file.txt'),
             duplicates=[comparison],
             total_size=1024,
-            duplicated_size=1024
+            total_items=1,
+            duplicated_size=1024,
+            duplicated_items=1
         )
 
         serialized = original.to_msgpack()
@@ -240,7 +250,8 @@ class ReportWriterTest(unittest.TestCase):
                     [comparison],
                     total_size=100,
                     total_items=1,
-                    duplicated_size=100
+                    duplicated_size=100,
+                    duplicated_items=1
                 )
 
                 writer.write_duplicate_record(record)
@@ -270,7 +281,7 @@ class ReportWriterTest(unittest.TestCase):
                                           mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
                                           duplicated_size=50, duplicated_items=1,
                                           is_identical=True, is_superset=True)
-                record1 = DuplicateRecord(Path('file.txt'), [comp1], total_size=50, total_items=1, duplicated_size=50)
+                record1 = DuplicateRecord(Path('file.txt'), [comp1], total_size=50, total_items=1, duplicated_size=50, duplicated_items=1)
                 writer.write_duplicate_record(record1)
 
                 # Update with new duplicate
@@ -282,8 +293,9 @@ class ReportWriterTest(unittest.TestCase):
                     Path('file.txt'),
                     [comp1, comp2],
                     total_size=100,
-                    total_items=2,
-                    duplicated_size=100
+                    total_items=1,
+                    duplicated_size=100,
+                    duplicated_items=1
                 )
                 writer.write_duplicate_record(record2)
 
@@ -313,7 +325,7 @@ class ReportWriterTest(unittest.TestCase):
                                             mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
                                             duplicated_size=100, duplicated_items=1,
                                             is_identical=True, is_superset=True)
-                    record = DuplicateRecord(Path(f'file{i}.txt'), [comp], total_size=100, total_items=1, duplicated_size=100)
+                    record = DuplicateRecord(Path(f'file{i}.txt'), [comp], total_size=100, total_items=1, duplicated_size=100, duplicated_items=1)
                     writer.write_duplicate_record(record)
 
             # Verify all records exist using ReportReader
@@ -1424,7 +1436,8 @@ class ReportReaderTest(unittest.TestCase):
                     [comparison],
                     total_size=100,
                     total_items=1,
-                    duplicated_size=100
+                    duplicated_size=100,
+                    duplicated_items=1
                 )
                 writer.write_duplicate_record(record)
 
@@ -1475,7 +1488,8 @@ class ReportReaderTest(unittest.TestCase):
                         [comp],
                         total_size=100,
                         total_items=1,
-                        duplicated_size=100
+                        duplicated_size=100,
+                        duplicated_items=1
                     )
                     writer.write_duplicate_record(record)
 
