@@ -110,29 +110,36 @@ class MetadataMatchReducer:
             self,
             path: Path,
             *,
-            is_identical: bool | None,
-            is_superset: bool
+            non_identical: bool,
+            non_superset: bool
     ) -> 'DuplicateMatch':
         """Create a DuplicateMatch using aggregated metadata and calculate is_identical.
 
         Args:
             path: Path to the duplicate (relative to archive root)
-            is_superset: Whether the duplicate contains all content from analyzed item
-            is_identical: Pre-calculated is_identical value; if None, calculated from aggregated metadata
+            non_identical: If True, forces is_identical to False (content/structure differs).
+                          If False, calculates is_identical using the comparison rule.
+            non_superset: If True, forces is_superset to False (not all items present).
+                         If False, sets is_superset equal to is_identical.
 
         Returns:
             DuplicateMatch with aggregated metadata and calculated is_identical
         """
-        # Calculate is_identical using comparison rule if not provided
-        if is_identical is None:
-            is_identical = self._comparison_rule.calculate_is_identical(
-                mtime_match=self.mtime_match,
-                atime_match=self.atime_match,
-                ctime_match=self.ctime_match,
-                mode_match=self.mode_match,
-                owner_match=self.owner_match,
-                group_match=self.group_match
-            )
+        # Calculate metadata match using comparison rule
+        metadata_matches = self._comparison_rule.calculate_is_identical(
+            mtime_match=self.mtime_match,
+            atime_match=self.atime_match,
+            ctime_match=self.ctime_match,
+            mode_match=self.mode_match,
+            owner_match=self.owner_match,
+            group_match=self.group_match
+        )
+
+        # Calculate is_identical: requires both structure match AND metadata match
+        is_identical = (not non_identical) and metadata_matches
+
+        # Calculate is_superset: requires all analyzed items present AND metadata match
+        is_superset = (not non_superset) and metadata_matches
 
         return DuplicateMatch(
             path,
@@ -167,7 +174,7 @@ class DuplicateMatchRule:
     """
 
     def __init__(self, *, include_mtime: bool = True, include_atime: bool = False,
-                 include_ctime: bool = True, include_mode: bool = True,
+                 include_ctime: bool = False, include_mode: bool = True,
                  include_owner: bool = True, include_group: bool = True):
         self.include_mtime = include_mtime
         self.include_atime = include_atime
@@ -243,7 +250,7 @@ class DuplicateMatchRule:
         return cls(
             include_mtime=data.get('include_mtime', True),
             include_atime=data.get('include_atime', False),
-            include_ctime=data.get('include_ctime', True),
+            include_ctime=data.get('include_ctime', False),
             include_mode=data.get('include_mode', True),
             include_owner=data.get('include_owner', True),
             include_group=data.get('include_group', True)
@@ -875,8 +882,8 @@ class AnalyzeProcessor:
         # total_items: count of all child items (files and special files, not directories)
         # duplicated_size: sum of child file sizes that have content-equivalent files in archive
         total_size = 0
-        total_items = 0
         duplicated_size = 0
+        all_items: set[str] = set()
 
         # Build map of candidate archive directories to their pending file comparisons
         # candidate_matches[archive_dir][base_name] = DuplicateMatch for file in archive_dir
@@ -903,30 +910,23 @@ class AnalyzeProcessor:
                 raise TypeError(f"Unexpected result type {type(result)}")
 
             total_size += result.total_size
-            total_items += result.total_items
             duplicated_size += result.duplicated_size
+            all_items.add(result.base_name)
 
         # Early return or defer based on presence of candidate dirs and deferred items
         if not candidate_matches:
             if not deferred_items:
-                return ImmediateResult(context.relative_path, [], total_size, total_items, duplicated_size)
+                return ImmediateResult(context.relative_path, [], total_size, len(all_items), duplicated_size)
             else:
-                return DeferredResult(context.relative_path, total_size, total_items, duplicated_size)
+                return DeferredResult(context.relative_path, total_size, len(all_items), duplicated_size)
 
         # Compare this directory with each candidate archive directory
         metadata_comparisons: list[DuplicateMatch] = []
 
         for candidate_dir, child_matches in candidate_matches.items():
-            full_candidate_path: Path = self._archive_path / candidate_dir
-
-            # Verify the candidate directory is actually a directory
-            candidate_stat = full_candidate_path.stat()
-            if not stat.S_ISDIR(candidate_stat.st_mode):
-                continue  # Not a directory, skip
-
             # Compare this candidate directory with the analyzed directory
             comparison = await self._compare_directory_with_candidate(
-                dir_path, context, candidate_dir, child_matches, deferred_items
+                dir_path, context, all_items, candidate_dir, child_matches, deferred_items
             )
 
             if comparison is not None:
@@ -934,10 +934,11 @@ class AnalyzeProcessor:
 
         # Return early if no matching directories were found
         if not metadata_comparisons:
-            return ImmediateResult(context.relative_path, [], total_size, total_items, duplicated_size)
+            return ImmediateResult(context.relative_path, [], total_size, len(all_items), duplicated_size)
 
         # Create and write duplicate record
-        record = DuplicateRecord(context.relative_path, metadata_comparisons, total_size, total_items, duplicated_size)
+        record = DuplicateRecord(
+            context.relative_path, metadata_comparisons, total_size, len(all_items), duplicated_size)
         self._writer.write_duplicate_record(record)
 
         logger.info("Completed analyzing directory: %s", context.relative_path)
@@ -1010,14 +1011,15 @@ class AnalyzeProcessor:
         # For special files, is_superset equals is_identical (file itself is the only item)
         return reducer.create_duplicate_match(
             candidate_item_path.relative_to(self._archive_path),
-            is_identical=None,
-            is_superset=True
+            non_identical=False,
+            non_superset=False,
         )
 
     async def _compare_directory_with_candidate(
             self,
             dir_path: Path,
             context: FileContext,
+            all_items: set[str],
             candidate_dir: Path,
             child_matches: dict[str, DuplicateMatch],
             deferred_items: set[str]
@@ -1027,6 +1029,7 @@ class AnalyzeProcessor:
         Args:
             dir_path: Path to the directory being analyzed (can be used directly from working directory)
             context: File context for the directory being analyzed
+            all_items: Set of all item names (base names) in the analyzed directory
             candidate_dir: Relative path to the candidate archive directory
             child_matches: Map of base_name -> DuplicateMatch for files in candidate directory
             deferred_items: Set of base names for deferred items
@@ -1043,18 +1046,17 @@ class AnalyzeProcessor:
         if logger.isEnabledFor(logging.DEBUG):
             if child_matches:
                 sorted_child_names = sorted(child_matches.keys())
-                logger.debug("Child files for %s vs %s: %s", context.relative_path, candidate_dir, ', '.join(sorted_child_names))
+                logger.debug("Child files for %s vs %s: %s", context.relative_path, candidate_dir,
+                             ', '.join(sorted_child_names))
             if deferred_items:
                 sorted_deferred_names = sorted(deferred_items)
-                logger.debug("Deferred items for %s vs %s: %s", context.relative_path, candidate_dir, ', '.join(sorted_deferred_names))
-        full_candidate_path: Path = self._archive_path / candidate_dir
+                logger.debug("Deferred items for %s vs %s: %s", context.relative_path, candidate_dir,
+                             ', '.join(sorted_deferred_names))
+
+        candidate_full_path: Path = self._archive_path / candidate_dir
 
         # Track metadata matches using reducer
         reducer = MetadataMatchReducer(self._comparison_rule)
-
-        # Check that regular files with duplicates have at least one in this candidate directory
-        files_with_identical_duplicates: int = 0  # Files where duplicate is identical
-        total_files_with_duplicates: int = len(child_matches)
 
         # Track the first comparison rule we encounter to validate consistency
         comparison_rule: DuplicateMatchRule | None = None
@@ -1072,79 +1074,43 @@ class AnalyzeProcessor:
             # Aggregate metadata matches from child
             reducer.aggregate_from_match(matching_comparison)
 
-            # Check if this child's duplicate is identical
-            if matching_comparison.is_identical:
-                files_with_identical_duplicates += 1
-
-        # Check deferred items in two passes: non-directories first, then directories
-        deferred_items_match: bool = True
-
         # Process all deferred items
         # Collect all results before determining if this is a valid match
         for base_name in deferred_items:
             # Construct paths for both analyzed and candidate items
             analyzed_item_path: Path = dir_path / base_name
-            candidate_item_path: Path = full_candidate_path / base_name
+            candidate_item_path: Path = candidate_full_path / base_name
 
             # Get file stats (don't follow symlinks)
             analyzed_stat: os.stat_result = analyzed_item_path.lstat()
             try:
                 candidate_stat: os.stat_result = candidate_item_path.lstat()
             except FileNotFoundError:
-                # Item doesn't exist in candidate directory - mark mismatch but continue
-                deferred_items_match = False
                 continue
 
             # Use common helper to compare the deferred item
-            deferred_match = self._compare_deferred_item(
+            matching_comparison = self._compare_deferred_item(
                 analyzed_item_path, candidate_item_path, analyzed_stat, candidate_stat
             )
-            if deferred_match is None:
-                # Deferred item doesn't match - mark mismatch but continue collecting results
-                deferred_items_match = False
+            if matching_comparison is None:
                 continue
 
             # Aggregate metadata matches from deferred item
-            reducer.aggregate_from_match(deferred_match)
+            reducer.aggregate_from_match(matching_comparison)
 
-        # Check for extra files in candidate directory that aren't in analyzed directory
-        candidate_items: set[str] = set()
-        for item in full_candidate_path.iterdir():
-            candidate_items.add(item.name)
-
-        analyzed_items: set[str] = set(child_matches.keys()) | deferred_items
-        extra_items: set[str] = candidate_items - analyzed_items
-        has_extra_items: bool = len(extra_items) > 0
-
-        # Verify at least some files matched before considering this a duplicate
-        if total_files_with_duplicates == 0:
-            return None
-
-        # Determine match type
-        # is_superset: all analyzed files exist in candidate (may have extras)
-        is_superset: bool = deferred_items_match
-
-        # For is_identical, first check structural requirements (content match, no extras)
-        # Then use the comparison rule to determine if metadata matches
-        is_identical: bool = (is_superset and
-                              not has_extra_items and
-                              files_with_identical_duplicates == total_files_with_duplicates)
-
-        # Compare directory-level metadata and combine with aggregated child metadata
-        dir_stat: os.stat_result = context.stat
-        dup_stat: os.stat_result = full_candidate_path.stat()
+        # Get items in candidate directory for comparison
+        candidate_items: set[str] = set((i.name for i in candidate_full_path.iterdir()))
 
         # Aggregate directory-level metadata with child metadata
-        reducer.aggregate_from_stat(dir_stat, dup_stat)
+        reducer.aggregate_from_stat(context.stat, candidate_full_path.stat())
 
-        # For directories, metadata must match both directory AND all children
-        # If is_identical is already False due to content, directory metadata can't make it True
-        # But if content is identical, use the comparison rule to check directory-level metadata
-        # Create the final DuplicateMatch using the factory method
+        # Create the DuplicateMatch with identity determined by set comparison
+        # non_identical: True if the item sets differ (different structure)
+        # non_superset: True if analyzed items are not a subset of candidate items
         return reducer.create_duplicate_match(
             candidate_dir,
-            is_identical=is_identical if is_identical else None,
-            is_superset=is_superset
+            non_identical=all_items != candidate_items,
+            non_superset=(not all_items.issubset(candidate_items))
         )
 
     async def _handle_file(self, file_path: Path, context: FileContext, throttler: Any) -> None:
@@ -1490,6 +1456,56 @@ class DescribeFormatter(ABC):
         """
         pass
 
+    def _get_status_message(self, comparison: DuplicateMatch) -> str:
+        """Get status message for a duplicate match.
+
+        Args:
+            comparison: DuplicateMatch to get status for
+
+        Returns:
+            Status message string
+        """
+        if comparison.is_identical:
+            return "Identical"
+        elif comparison.is_superset:
+            return "Superset (contains all analyzed content, may have extras)"
+        else:
+            return "Partial match (not all analyzed content present)"
+
+    def _print_duplicate_comparison(self, comparison: DuplicateMatch) -> None:
+        """Print information for a single duplicate comparison.
+
+        Args:
+            comparison: DuplicateMatch to print
+        """
+        print(f"  {comparison.path}")
+        print(f"    Status: {self._get_status_message(comparison)}")
+
+        # Show metadata matches for non-identical items
+        if not comparison.is_identical:
+            matches = []
+            if comparison.mtime_match:
+                matches.append("mtime")
+            if comparison.atime_match:
+                matches.append("atime")
+            if comparison.ctime_match:
+                matches.append("ctime")
+            if comparison.mode_match:
+                matches.append("mode")
+            if comparison.owner_match:
+                matches.append("owner")
+            if comparison.group_match:
+                matches.append("group")
+
+            if matches:
+                print(f"    Matching: {', '.join(matches)}")
+
+        # Show size and items if relevant (non-zero)
+        if comparison.duplicated_items > 0:
+            print(f"    Duplicated items: {comparison.duplicated_items}")
+        if comparison.duplicated_size > 0:
+            print(f"    Duplicated size: {format_size(comparison.duplicated_size)}")
+
     def _print_duplicates(self, record: DuplicateRecord) -> None:
         """Print duplicate information for the item.
 
@@ -1497,40 +1513,7 @@ class DescribeFormatter(ABC):
             record: DuplicateRecord for the item
         """
         for comparison in record.duplicates:
-            print(f"  {comparison.path}")
-
-            # Show status based on match type
-            if comparison.is_identical:
-                print(f"    Status: Identical")
-            elif comparison.is_superset:
-                print(f"    Status: Superset (contains all content, metadata differs)")
-            else:
-                print(f"    Status: Content match (partial)")
-
-            # Show metadata matches for non-identical items
-            if not comparison.is_identical:
-                matches = []
-                if comparison.mtime_match:
-                    matches.append("mtime")
-                if comparison.atime_match:
-                    matches.append("atime")
-                if comparison.ctime_match:
-                    matches.append("ctime")
-                if comparison.mode_match:
-                    matches.append("mode")
-                if comparison.owner_match:
-                    matches.append("owner")
-                if comparison.group_match:
-                    matches.append("group")
-
-                if matches:
-                    print(f"    Matching: {', '.join(matches)}")
-
-            # Show size and items if relevant (non-zero)
-            if comparison.duplicated_items > 0:
-                print(f"    Duplicated items: {comparison.duplicated_items}")
-            if comparison.duplicated_size > 0:
-                print(f"    Duplicated size: {format_size(comparison.duplicated_size)}")
+            self._print_duplicate_comparison(comparison)
 
     def _print_details(self, record: DuplicateRecord) -> None:
         """Print additional details for the item.
@@ -1549,6 +1532,23 @@ class FileDescribeFormatter(DescribeFormatter):
     def _get_item_type(self) -> str:
         """Get the item type string."""
         return "File"
+
+    def _get_status_message(self, comparison: DuplicateMatch) -> str:
+        """Get status message for a file duplicate match.
+
+        For files, is_superset always equals is_identical, so we only show
+        two states: identical or content match with differing metadata.
+
+        Args:
+            comparison: DuplicateMatch to get status for
+
+        Returns:
+            Status message string
+        """
+        if comparison.is_identical:
+            return "Identical"
+        else:
+            return "Content match (metadata differs)"
 
 
 class DirectoryDescribeFormatter(DescribeFormatter):

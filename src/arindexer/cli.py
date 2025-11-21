@@ -163,9 +163,9 @@ def archive_indexer():
         action='store_true',
         help='Include access time (atime) when determining if files are identical (default: excluded)')
     parser_analyze.add_argument(
-        '--exclude-ctime',
+        '--include-ctime',
         action='store_true',
-        help='Exclude change time (ctime) when determining if files are identical (default: included)')
+        help='Include change time (ctime) when determining if files are identical (default: excluded)')
     parser_analyze.add_argument(
         '--exclude-owner',
         action='store_true',
@@ -305,7 +305,7 @@ def _analyze(archive: Archive, output: StandardOutput, args):
     comparison_rule = DuplicateMatchRule(
         include_mtime=True,  # Always included
         include_atime=args.include_atime,  # Default: False
-        include_ctime=not args.exclude_ctime,  # Default: True
+        include_ctime=args.include_ctime,  # Default: False
         include_mode=True,  # Always included
         include_owner=not args.exclude_owner,  # Default: True
         include_group=not args.exclude_group  # Default: True
