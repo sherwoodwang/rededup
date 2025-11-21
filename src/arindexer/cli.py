@@ -186,6 +186,8 @@ def archive_indexer():
             Examples:
               arindexer describe /home/user/documents/file.txt
               arindexer describe /home/user/documents
+              arindexer describe --all /home/user/documents/file.txt
+              arindexer describe --limit 5 --sort-by path /home/user/documents
 
             For files: Shows list of duplicates found in the archive.
             For directories: Shows summary of duplicated files with sizes.
@@ -194,6 +196,29 @@ def archive_indexer():
         'path',
         metavar='PATH',
         help='File or directory to describe from analysis reports')
+    parser_describe.add_argument(
+        '--all',
+        action='store_true',
+        help='Show all duplicates (default: show only the most relevant)')
+    parser_describe.add_argument(
+        '--limit',
+        type=int,
+        metavar='N',
+        help='Maximum number of duplicates to show (default: 1 if not --all)')
+    parser_describe.add_argument(
+        '--sort-by',
+        choices=['size', 'items', 'identical', 'path'],
+        default='size',
+        help='Sort duplicates by: size (duplicated_size, default), items (duplicated_items), identical (identity status), or path (path length)')
+    parser_describe.add_argument(
+        '--sort-children',
+        choices=['dup-size', 'dup-items', 'total-size', 'name'],
+        default='dup-size',
+        help='Sort directory children by: dup-size (duplicated size descending, default), dup-items (duplicated items descending), total-size (total size descending), or name (alphabetically)')
+    parser_describe.add_argument(
+        '--bytes',
+        action='store_true',
+        help='Show sizes in bytes instead of human-readable format (e.g., 1048576 instead of 1.00 MB)')
     parser_describe.set_defaults(method=_describe, create=False)
 
     parser_inspect = subparsers.add_parser(
@@ -316,10 +341,26 @@ def _analyze(archive: Archive, output: StandardOutput, args):
 
 @no_archive
 def _describe(output: StandardOutput, args):
-    from .commands.analyzer import do_describe
+    from .commands.analyzer import do_describe, DescribeOptions
 
     path = Path(args.path)
-    do_describe(path)
+
+    # Determine limit
+    if args.all:
+        limit = None  # No limit
+    elif args.limit is not None:
+        limit = args.limit
+    else:
+        limit = 1  # Default: show only most relevant
+
+    options = DescribeOptions(
+        limit=limit,
+        sort_by=args.sort_by,
+        sort_children=args.sort_children,
+        use_bytes=args.bytes
+    )
+
+    do_describe(path, options)
 
 
 @needs_archive

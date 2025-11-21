@@ -1343,12 +1343,32 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes:.2f} PB"
 
 
-def do_describe(target_path: Path) -> None:
+@dataclass
+class DescribeOptions:
+    """Options for controlling duplicate display in describe command.
+
+    Attributes:
+        limit: Maximum number of duplicates to show. None means show all.
+        sort_by: Sorting criterion for duplicates - 'size', 'items', 'identical', or 'path'
+        sort_children: Sorting criterion for directory children - 'dup-size', 'dup-items', 'total-size', or 'name'
+        use_bytes: If True, show sizes in bytes instead of human-readable format
+    """
+    limit: int | None = 1
+    sort_by: str = 'size'
+    sort_children: str = 'dup-size'
+    use_bytes: bool = False
+
+
+def do_describe(target_path: Path, options: DescribeOptions | None = None) -> None:
     """Describe duplicate information for a file or directory from analysis reports.
 
     Args:
         target_path: Path to the file or directory to describe
+        options: Options for controlling duplicate display
     """
+    if options is None:
+        options = DescribeOptions()
+
     # Resolve target path
     target_path = target_path.resolve()
 
@@ -1388,9 +1408,9 @@ def do_describe(target_path: Path) -> None:
 
             # Check if target is a directory and create appropriate formatter
             if target_path.is_dir():
-                formatter = DirectoryDescribeFormatter(reader, relative_path, manifest)
+                formatter = DirectoryDescribeFormatter(reader, relative_path, manifest, options)
             else:
-                formatter = FileDescribeFormatter(reader, relative_path, manifest)
+                formatter = FileDescribeFormatter(reader, relative_path, manifest, options)
 
             # Execute the describe operation
             formatter.describe()
@@ -1404,17 +1424,20 @@ def do_describe(target_path: Path) -> None:
 class DescribeFormatter(ABC):
     """Base class for formatting describe output using template pattern."""
 
-    def __init__(self, reader: ReportReader, relative_path: Path, manifest: ReportManifest):
+    def __init__(self, reader: ReportReader, relative_path: Path, manifest: ReportManifest,
+                 options: DescribeOptions | None = None):
         """Initialize formatter.
 
         Args:
             reader: ReportReader instance with open database
             relative_path: Path relative to the analyzed target
             manifest: Report manifest
+            options: Options for controlling duplicate display
         """
         self.reader = reader
         self.relative_path = relative_path
         self.manifest = manifest
+        self.options = options if options is not None else DescribeOptions()
 
     def describe(self) -> None:
         """Template method that describes the item."""
@@ -1440,9 +1463,12 @@ class DescribeFormatter(ABC):
             record: DuplicateRecord for the item
         """
         item_type = self._get_item_type()
+        total_size_str = str(record.total_size) if self.options.use_bytes else format_size(record.total_size)
+        dup_size_str = str(record.duplicated_size) if self.options.use_bytes else format_size(record.duplicated_size)
+
         print(f"{item_type}: {self.relative_path}")
-        print(f"Size: {format_size(record.total_size)}")
-        print(f"Duplicated size: {format_size(record.duplicated_size)}")
+        print(f"Size: {total_size_str}")
+        print(f"Duplicated size: {dup_size_str}")
         print(f"Items: {record.total_items}")
         print(f"Duplicates: {len(record.duplicates)}")
         print()
@@ -1504,7 +1530,44 @@ class DescribeFormatter(ABC):
         if comparison.duplicated_items > 0:
             print(f"    Duplicated items: {comparison.duplicated_items}")
         if comparison.duplicated_size > 0:
-            print(f"    Duplicated size: {format_size(comparison.duplicated_size)}")
+            size_str = str(comparison.duplicated_size) if self.options.use_bytes else format_size(comparison.duplicated_size)
+            print(f"    Duplicated size: {size_str}")
+
+    def _sort_duplicates(self, duplicates: list[DuplicateMatch]) -> list[DuplicateMatch]:
+        """Sort duplicates according to options.
+
+        Sort priority (for all sort_by options):
+        1. Primary criterion (size, items, identical status, or path length)
+        2. Identity status (identical > superset > partial)
+        3. Path length (shorter is better)
+
+        Args:
+            duplicates: List of DuplicateMatch objects to sort
+
+        Returns:
+            Sorted list of duplicates
+        """
+        def sort_key(dup: DuplicateMatch) -> tuple[Any, ...]:
+            # Identity status rank: identical=2, superset=1, partial=0
+            identity_rank = 2 if dup.is_identical else (1 if dup.is_superset else 0)
+
+            if self.options.sort_by == 'size':
+                # Sort by duplicated_size (descending), then identity, then path length
+                return (-dup.duplicated_size, -identity_rank, len(str(dup.path)))
+            elif self.options.sort_by == 'items':
+                # Sort by duplicated_items (descending), then identity, then path length
+                return (-dup.duplicated_items, -identity_rank, len(str(dup.path)))
+            elif self.options.sort_by == 'identical':
+                # Sort by identity status, then path length
+                return (-identity_rank, len(str(dup.path)))
+            elif self.options.sort_by == 'path':
+                # Sort by path length (ascending), then identity
+                return (len(str(dup.path)), -identity_rank)
+            else:
+                # Default to size
+                return (-dup.duplicated_size, -identity_rank, len(str(dup.path)))
+
+        return sorted(duplicates, key=sort_key)
 
     def _print_duplicates(self, record: DuplicateRecord) -> None:
         """Print duplicate information for the item.
@@ -1512,8 +1575,25 @@ class DescribeFormatter(ABC):
         Args:
             record: DuplicateRecord for the item
         """
-        for comparison in record.duplicates:
+        # Sort duplicates
+        sorted_duplicates = self._sort_duplicates(record.duplicates)
+
+        # Apply limit
+        if self.options.limit is not None and len(sorted_duplicates) > self.options.limit:
+            displayed_duplicates = sorted_duplicates[:self.options.limit]
+            total_count = len(record.duplicates)
+        else:
+            displayed_duplicates = sorted_duplicates
+            total_count = None
+
+        # Print duplicates
+        for comparison in displayed_duplicates:
             self._print_duplicate_comparison(comparison)
+
+        # Show count if not all duplicates are displayed
+        if total_count is not None:
+            print()
+            print(f"Showing {len(displayed_duplicates)} of {total_count} duplicates")
 
     def _print_details(self, record: DuplicateRecord) -> None:
         """Print additional details for the item.
@@ -1579,9 +1659,15 @@ class DirectoryDescribeFormatter(DescribeFormatter):
             print("  Directory is empty")
             return
 
-        # Query report for each child found on disk
+        # Prepare table data
+        # Store both raw values (for sorting) and formatted strings (for display)
+        # Format: (name, is_dir, total_size_raw, dup_size_raw, dups_raw, in_report, type_str, total_size_str, dup_size_str, dups_str, in_report_str)
+        rows_data: list[tuple[str, bool, int, int, int, bool, str, str, str, str, str]] = []
         for child_path in children:
             child_name = child_path.name
+            is_dir = child_path.is_dir()
+            type_str = "D" if is_dir else "F"
+
             # Construct the relative path for this child
             child_relative_path: Path = self.relative_path / child_name
 
@@ -1590,14 +1676,83 @@ class DirectoryDescribeFormatter(DescribeFormatter):
 
             if child_record is None:
                 # Child exists on disk but not in report
-                print(f"  {child_name}")
-                print(f"    (Not in report)")
+                total_size_str = "0" if self.options.use_bytes else "0 B"
+                dup_size_str = "0" if self.options.use_bytes else "0 B"
+                rows_data.append((child_name, is_dir, 0, 0, 0, False, type_str, total_size_str, dup_size_str, "0", "No"))
             elif child_record.duplicates:
-                print(f"  {child_name}")
-                print(f"    Total size: {format_size(child_record.total_size)}")
-                print(f"    Duplicated size: {format_size(child_record.duplicated_size)}")
-                print(f"    Duplicates: {len(child_record.duplicates)}")
+                total_size_str = str(child_record.total_size) if self.options.use_bytes else format_size(child_record.total_size)
+                dup_size_str = str(child_record.duplicated_size) if self.options.use_bytes else format_size(child_record.duplicated_size)
+                rows_data.append((
+                    child_name,
+                    is_dir,
+                    child_record.total_size,
+                    child_record.duplicated_size,
+                    len(child_record.duplicates),
+                    True,
+                    type_str,
+                    total_size_str,
+                    dup_size_str,
+                    str(len(child_record.duplicates)),
+                    "Yes"
+                ))
             else:
-                print(f"  {child_name}")
-                print(f"    Total size: {format_size(child_record.total_size)}")
-                print(f"    No duplicates")
+                total_size_str = str(child_record.total_size) if self.options.use_bytes else format_size(child_record.total_size)
+                dup_size_str = "0" if self.options.use_bytes else "0 B"
+                rows_data.append((
+                    child_name,
+                    is_dir,
+                    child_record.total_size,
+                    0,
+                    0,
+                    True,
+                    type_str,
+                    total_size_str,
+                    dup_size_str,
+                    "0",
+                    "Yes"
+                ))
+
+        # Sort rows according to options
+        def sort_key(row: tuple[str, bool, int, int, int, bool, str, str, str, str, str]) -> tuple[Any, ...]:
+            name, is_dir, total_size, dup_size, dups, in_report, _, _, _, _, _ = row
+
+            if self.options.sort_children == 'dup-size':
+                # Sort by dup_size descending, then dup_items descending, then total_size descending
+                return (-dup_size, -dups, -total_size)
+            elif self.options.sort_children == 'dup-items':
+                # Sort by dups descending, then dup_size descending, then total_size descending
+                return (-dups, -dup_size, -total_size)
+            elif self.options.sort_children == 'total-size':
+                # Sort by total_size descending
+                return (-total_size,)
+            elif self.options.sort_children == 'name':
+                # Sort alphabetically by name
+                return (name,)
+            else:
+                # Default to dup-size
+                return (-dup_size, -dups, -total_size)
+
+        rows_data = sorted(rows_data, key=sort_key)
+
+        # Extract formatted strings for display (name, type, total_size, dup_size, dups, in_report)
+        rows: list[tuple[str, str, str, str, str, str]] = [
+            (row[0], row[6], row[7], row[8], row[9], row[10]) for row in rows_data
+        ]
+
+        # Calculate column widths
+        col1_width = max(len(row[0]) for row in rows)
+        col2_width = 1  # Type column: single character (D or F)
+        col3_width = max(max(len(row[2]) for row in rows), len('Total Size'))
+        col4_width = max(max(len(row[3]) for row in rows), len('Dup Size'))
+        col5_width = max(max(len(row[4]) for row in rows), len('Dups'))
+        col6_width = max(len(row[5]) for row in rows)
+
+        # Print header (numeric columns right-aligned)
+        header = f"{'Name':<{col1_width}}  {'T':<{col2_width}}  {'Total Size':>{col3_width}}  {'Dup Size':>{col4_width}}  {'Dups':>{col5_width}}  {'In Report':<{col6_width}}"
+        print(header)
+        print("-" * len(header))
+
+        # Print rows (numeric columns right-aligned)
+        for row in rows:
+            line = f"{row[0]:<{col1_width}}  {row[1]:<{col2_width}}  {row[2]:>{col3_width}}  {row[3]:>{col4_width}}  {row[4]:>{col5_width}}  {row[5]:<{col6_width}}"
+            print(line)
