@@ -1707,12 +1707,16 @@ class DirectoryDescribeFormatter(DescribeFormatter):
 
         # Prepare table data
         # Store both raw values (for sorting) and formatted strings (for display)
-        # Format: (name, is_dir, total_size_raw, dup_size_raw, dups_raw, in_report, type_str, total_size_str, dup_size_str, dups_str, in_report_str)
-        rows_data: list[tuple[str, bool, int, int, int, bool, str, str, str, str, str]] = []
+        # Format: (name, is_dir, total_size_raw, dup_size_raw, dups_raw, max_match_dup_size_raw, best_status_rank,
+        #          total_items_raw, dup_items_raw, size_ratio, items_ratio, max_ratio, in_report,
+        #          type_str, total_size_str, dup_size_str, dups_str, max_match_dup_size_str, best_status_str,
+        #          total_items_str, dup_items_str, size_ratio_str, items_ratio_str, max_ratio_str, in_report_str)
+        rows_data: list[tuple[str, bool, int, int, int, int, int, int, int, float, float, float, bool,
+                              str, str, str, str, str, str, str, str, str, str, str, str]] = []
         for child_path in children:
             child_name = child_path.name
             is_dir = child_path.is_dir()
-            type_str = "D" if is_dir else "F"
+            type_str = "Dir" if is_dir else "File"
 
             # Construct the relative path for this child
             child_relative_path: Path = self.relative_path / child_name
@@ -1725,50 +1729,111 @@ class DirectoryDescribeFormatter(DescribeFormatter):
                 # Total size is not available in report, but dup size is known to be 0
                 total_size_str = "-"
                 dup_size_str = "0" if self.options.use_bytes else "0 B"
-                rows_data.append((child_name, is_dir, 0, 0, 0, False, type_str, total_size_str, dup_size_str, "0", "No"))
+                max_match_dup_size_str = "0" if self.options.use_bytes else "0 B"
+                best_status_str = "-"
+                rows_data.append((child_name, is_dir, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, False,
+                                type_str, total_size_str, dup_size_str, "0", max_match_dup_size_str, best_status_str,
+                                "-", "-", "-", "-", "-", "No"))
             elif child_record.duplicates:
                 total_size_str = str(child_record.total_size) if self.options.use_bytes else format_size(child_record.total_size)
                 dup_size_str = str(child_record.duplicated_size) if self.options.use_bytes else format_size(child_record.duplicated_size)
+
+                # Find the duplicate with highest duplicated_size and use its status
+                max_match_dup = max(child_record.duplicates, key=lambda dup: dup.duplicated_size)
+                max_match_dup_size = max_match_dup.duplicated_size
+                max_match_dup_size_str = str(max_match_dup_size) if self.options.use_bytes else format_size(max_match_dup_size)
+
+                # Get status from the max match duplicate
+                if max_match_dup.is_identical:
+                    best_status_str = "Identical"
+                    best_status_rank = 2
+                elif max_match_dup.is_superset:
+                    best_status_str = "Superset"
+                    best_status_rank = 1
+                else:
+                    best_status_str = "Partial"
+                    best_status_rank = 0
+
+                # Calculate ratios
+                size_ratio = child_record.duplicated_size / child_record.total_size if child_record.total_size > 0 else 0.0
+                items_ratio = child_record.duplicated_items / child_record.total_items if child_record.total_items > 0 else 0.0
+                max_ratio = max_match_dup_size / child_record.total_size if child_record.total_size > 0 else 0.0
+
+                size_ratio_str = f"{size_ratio:.1%}"
+                items_ratio_str = f"{items_ratio:.1%}"
+                max_ratio_str = f"{max_ratio:.1%}"
+
                 rows_data.append((
                     child_name,
                     is_dir,
                     child_record.total_size,
                     child_record.duplicated_size,
                     len(child_record.duplicates),
+                    max_match_dup_size,
+                    best_status_rank,
+                    child_record.total_items,
+                    child_record.duplicated_items,
+                    size_ratio,
+                    items_ratio,
+                    max_ratio,
                     True,
                     type_str,
                     total_size_str,
                     dup_size_str,
                     str(len(child_record.duplicates)),
+                    max_match_dup_size_str,
+                    best_status_str,
+                    str(child_record.total_items),
+                    str(child_record.duplicated_items),
+                    size_ratio_str,
+                    items_ratio_str,
+                    max_ratio_str,
                     "Yes"
                 ))
             else:
                 total_size_str = str(child_record.total_size) if self.options.use_bytes else format_size(child_record.total_size)
                 dup_size_str = "0" if self.options.use_bytes else "0 B"
+                max_match_dup_size_str = "0" if self.options.use_bytes else "0 B"
+                best_status_str = "-"
                 rows_data.append((
                     child_name,
                     is_dir,
                     child_record.total_size,
                     0,
                     0,
+                    0,
+                    0,
+                    child_record.total_items,
+                    0,
+                    0.0,
+                    0.0,
+                    0.0,
                     True,
                     type_str,
                     total_size_str,
                     dup_size_str,
                     "0",
+                    max_match_dup_size_str,
+                    best_status_str,
+                    str(child_record.total_items),
+                    "0",
+                    "0.0%",
+                    "0.0%",
+                    "0.0%",
                     "Yes"
                 ))
 
         # Sort rows according to options
-        def sort_key(row: tuple[str, bool, int, int, int, bool, str, str, str, str, str]) -> tuple[Any, ...]:
-            name, is_dir, total_size, dup_size, dups, in_report, _, _, _, _, _ = row
+        def sort_key(row: tuple[str, bool, int, int, int, int, int, int, int, float, float, float, bool,
+                                str, str, str, str, str, str, str, str, str, str, str, str]) -> tuple[Any, ...]:
+            name, child_is_dir, total_size, dup_size, dups, match_dup_size, status_rank, total_items_val, dup_items_val, size_ratio_val, items_ratio_val, max_ratio_val, in_report, *_ = row
 
             if self.options.sort_children == 'dup-size':
                 # Sort by dup_size descending, then dup_items descending, then total_size descending
-                return (-dup_size, -dups, -total_size)
+                return -dup_size, -dups, -total_size
             elif self.options.sort_children == 'dup-items':
                 # Sort by dups descending, then dup_size descending, then total_size descending
-                return (-dups, -dup_size, -total_size)
+                return -dups, -dup_size, -total_size
             elif self.options.sort_children == 'total-size':
                 # Sort by total_size descending
                 return (-total_size,)
@@ -1777,29 +1842,38 @@ class DirectoryDescribeFormatter(DescribeFormatter):
                 return (name,)
             else:
                 # Default to dup-size
-                return (-dup_size, -dups, -total_size)
+                return -dup_size, -dups, -total_size
 
         rows_data = sorted(rows_data, key=sort_key)
 
-        # Extract formatted strings for display (name, type, total_size, dup_size, dups, in_report)
-        rows: list[tuple[str, str, str, str, str, str]] = [
-            (row[0], row[6], row[7], row[8], row[9], row[10]) for row in rows_data
+        # Extract formatted strings for display
+        # Order: name, type, total_size, dup_size, size_ratio, total_items, dup_items, items_ratio,
+        #        dups, max_match_dup_size, max_ratio, status, in_report
+        rows: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str, str]] = [
+            (row[0], row[13], row[14], row[15], row[21], row[19], row[20], row[22], row[16], row[17], row[23], row[18], row[24]) for row in rows_data
         ]
 
         # Calculate column widths
         col1_width = max(len(row[0]) for row in rows)
-        col2_width = 1  # Type column: single character (D or F)
+        col2_width = max(max(len(row[1]) for row in rows), len('Type'))
         col3_width = max(max(len(row[2]) for row in rows), len('Total Size'))
         col4_width = max(max(len(row[3]) for row in rows), len('Dup Size'))
-        col5_width = max(max(len(row[4]) for row in rows), len('Dups'))
-        col6_width = max(len(row[5]) for row in rows)
+        col5_width = max(max(len(row[4]) for row in rows), len('Size %'))
+        col6_width = max(max(len(row[5]) for row in rows), len('Total Items'))
+        col7_width = max(max(len(row[6]) for row in rows), len('Dup Items'))
+        col8_width = max(max(len(row[7]) for row in rows), len('Items %'))
+        col9_width = max(max(len(row[8]) for row in rows), len('Dups'))
+        col10_width = max(max(len(row[9]) for row in rows), len('Max Match'))
+        col11_width = max(max(len(row[10]) for row in rows), len('Max %'))
+        col12_width = max(max(len(row[11]) for row in rows), len('Status'))
+        col13_width = max(len(row[12]) for row in rows)
 
         # Print header (numeric columns right-aligned)
-        header = f"{'Name':<{col1_width}}  {'T':<{col2_width}}  {'Total Size':>{col3_width}}  {'Dup Size':>{col4_width}}  {'Dups':>{col5_width}}  {'In Report':<{col6_width}}"
+        header = f"{'Name':<{col1_width}}  {'Type':<{col2_width}}  {'Total Size':>{col3_width}}  {'Dup Size':>{col4_width}}  {'Size %':>{col5_width}}  {'Total Items':>{col6_width}}  {'Dup Items':>{col7_width}}  {'Items %':>{col8_width}}  {'Dups':>{col9_width}}  {'Max Match':>{col10_width}}  {'Max %':>{col11_width}}  {'Status':<{col12_width}}  {'In Report':<{col13_width}}"
         print(header)
         print("-" * len(header))
 
         # Print rows (numeric columns right-aligned)
         for row in rows:
-            line = f"{row[0]:<{col1_width}}  {row[1]:<{col2_width}}  {row[2]:>{col3_width}}  {row[3]:>{col4_width}}  {row[4]:>{col5_width}}  {row[5]:<{col6_width}}"
+            line = f"{row[0]:<{col1_width}}  {row[1]:<{col2_width}}  {row[2]:>{col3_width}}  {row[3]:>{col4_width}}  {row[4]:>{col5_width}}  {row[5]:>{col6_width}}  {row[6]:>{col7_width}}  {row[7]:>{col8_width}}  {row[8]:>{col9_width}}  {row[9]:>{col10_width}}  {row[10]:>{col11_width}}  {row[11]:<{col12_width}}  {row[12]:<{col13_width}}"
             print(line)
