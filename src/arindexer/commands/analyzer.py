@@ -438,8 +438,10 @@ class DuplicateRecord:
                 comparison.is_superset
             ])
 
-        return msgpack.dumps([path_components, duplicate_data, self.total_size, self.total_items, self.duplicated_size,
+        result = msgpack.dumps([path_components, duplicate_data, self.total_size, self.total_items, self.duplicated_size,
                               self.duplicated_items])
+        assert isinstance(result, bytes)
+        return result
 
     @classmethod
     def from_msgpack(cls, data: bytes) -> 'DuplicateRecord':
@@ -452,7 +454,13 @@ class DuplicateRecord:
             DuplicateRecord instance
         """
         decoded = msgpack.loads(data)
-        path_components, duplicate_data, total_size, total_items, duplicated_size, duplicated_items = decoded
+        assert isinstance(decoded, list)
+        path_components: list[str] = decoded[0]
+        duplicate_data: list[list[Any]] = decoded[1]
+        total_size: int = decoded[2]
+        total_items: int = decoded[3]
+        duplicated_size: int = decoded[4]
+        duplicated_items: int = decoded[5]
 
         path = Path(*path_components)
 
@@ -885,6 +893,7 @@ class AnalyzeProcessor:
         logger.info("Handling directory: %s", dir_path)
 
         # Register a DirectoryListener on the context
+        assert self._listener_coordinator is not None
         listener: DirectoryListener = self._listener_coordinator.register_directory(context)
 
         result_task: asyncio.Task[FileAnalysisResult] = listener.schedule_callback(
@@ -908,6 +917,7 @@ class AnalyzeProcessor:
 
         file_task: asyncio.Task[FileAnalysisResult] = await throttler.schedule(self._analyze_file(file_path, context))
         # Register this file's analysis result with its parent directory's listener
+        assert self._listener_coordinator is not None
         self._listener_coordinator.register_child_with_parent(context, file_task)
 
         logger.info("Completed handling file: %s", file_path)
@@ -930,6 +940,7 @@ class AnalyzeProcessor:
         # is avoided here for consistency and simplicity.
         future.set_result(DeferredResult(relative_path, 0, 1, 0, 0))
         # Register this deferred item with its parent directory's listener
+        assert self._listener_coordinator is not None
         self._listener_coordinator.register_child_with_parent(context, future)
 
     async def _analyze_directory_with_children(
@@ -951,6 +962,7 @@ class AnalyzeProcessor:
         Returns:
             ImmediateResult containing duplicate information for this directory
         """
+        assert context.relative_path is not None, "Directory context must have a relative path"
         logger.info("Analyzing directory: %s", context.relative_path)
 
         # Accumulate totals from all child results
@@ -1246,6 +1258,7 @@ class AnalyzeProcessor:
         Returns:
             ImmediateResult containing all duplicate information
         """
+        assert context.relative_path is not None, "File context must have a relative path"
         logger.info("Analyzing file: %s", context.relative_path)
 
         # Calculate digest
@@ -1420,13 +1433,14 @@ def format_size(size_bytes: int) -> str:
     Returns:
         Human-readable size string (e.g., "1.5 MB")
     """
+    size: float = float(size_bytes)
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if size_bytes < 1024.0:
+        if size < 1024.0:
             if unit == 'B':
-                return f"{size_bytes} {unit}"
-            return f"{size_bytes:.2f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.2f} PB"
+                return f"{int(size)} {unit}"
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+    return f"{size:.2f} PB"
 
 
 @dataclass

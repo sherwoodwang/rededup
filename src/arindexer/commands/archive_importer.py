@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from ..store.archive_store import ArchiveStore, FileSignature
 
@@ -7,7 +7,7 @@ from ..store.archive_store import ArchiveStore, FileSignature
 class ImportArgs(NamedTuple):
     """Arguments for import operation."""
     source_archive_path: Path
-    processor: any  # Processor for file content comparison
+    processor: Any  # Processor for file content comparison
 
 
 class ImportProcessor:
@@ -24,13 +24,13 @@ class ImportProcessor:
         self.processor = args.processor
         self.current_path = store.archive_path.absolute()
         self.source_path = args.source_archive_path.absolute()
-        self.source_store = None
+        self.source_store: ArchiveStore | None = None
 
         # Path transformation state
         self.is_nested = False
         self.is_ancestor = False
-        self.prefix_to_add = None
-        self.prefix_to_remove = None
+        self.prefix_to_add: Path | None = None
+        self.prefix_to_remove: Path | None = None
 
     def _validate_archives(self):
         """Validate that source and current archives have valid relationship."""
@@ -141,6 +141,7 @@ class ImportProcessor:
 
     def _check_hash_algorithm_compatibility(self):
         """Check and synchronize hash algorithms between source and target."""
+        assert self.source_store is not None
         source_hash_algo = self.source_store.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
         current_hash_algo = self.store.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
 
@@ -165,9 +166,11 @@ class ImportProcessor:
         """
         if self.is_nested:
             # Source is nested in current: prepend relative path
+            assert self.prefix_to_add is not None
             return self.prefix_to_add / path
         elif self.is_ancestor:
             # Source is ancestor: filter and strip prefix
+            assert self.prefix_to_remove is not None
             try:
                 # Check if path is under the current archive's scope
                 relative = path.relative_to(self.prefix_to_remove)
@@ -194,6 +197,7 @@ class ImportProcessor:
         next_available_ec_id = max((ec_id for ec_id, _ in existing_ec_classes), default=-1) + 1
 
         # Import each source EC class
+        assert self.source_store is not None
         for source_ec_id, source_paths in self.source_store.list_content_equivalent_classes(digest):
             # Transform paths from source to current archive's namespace
             transformed_paths = self._transform_paths(source_paths)
@@ -279,6 +283,7 @@ class ImportProcessor:
         Returns:
             File signature or None if not found
         """
+        assert self.source_store is not None
         for path, signature in self.source_store.list_registered_files():
             if path == file_path:
                 return signature
@@ -318,6 +323,7 @@ class ImportProcessor:
             self._check_hash_algorithm_compatibility()
 
             # Outer loop: scan file signatures from source
+            assert self.source_store is not None
             for file_path, signature in self.source_store.list_registered_files():
                 file_path: Path
                 signature: FileSignature

@@ -47,10 +47,12 @@ class RefreshProcessor:
 
     async def _handle_file(self, file_path: Path, file_context: FileContext):
         """Handle a file found during archive walk."""
+        relative_path = file_context.relative_path
+        assert relative_path is not None, "File context must have a relative path"
         # Generate signature only for new files. Existing files are handled in _refresh_entry().
-        if self._store.lookup_file(file_context.relative_path) is None:
+        if self._store.lookup_file(relative_path) is None:
             return await self._generate_signature(
-                file_path, file_context.relative_path, file_context.stat.st_mtime_ns)
+                file_path, relative_path, file_context.stat.st_mtime_ns)
         return None
 
     async def _refresh_entry(self, relative_path: Path, entry_signature: FileSignature):

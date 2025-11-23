@@ -4,6 +4,7 @@ import filecmp
 import hashlib
 import logging
 import multiprocessing
+from multiprocessing.pool import Pool
 import pathlib
 import stat
 from enum import StrEnum
@@ -48,9 +49,11 @@ def compare_file_metadata(a: pathlib.Path, b: pathlib.Path):
     if sta.st_mtime != stb.st_mtime or sta.st_mtime_ns != stb.st_mtime_ns:
         diffs.append(('mtime', sta.st_mtime_ns, stb.st_mtime_ns))
 
-    if hasattr(sta, "st_birthtime") and hasattr(stb, "st_birthtime"):
-        if sta.st_birthtime != stb.st_birthtime:
-            diffs.append(('birthtime', sta.st_birthtime, stb.st_birthtime))
+    sta_birthtime = getattr(sta, "st_birthtime", None)
+    stb_birthtime = getattr(stb, "st_birthtime", None)
+    if sta_birthtime is not None and stb_birthtime is not None:
+        if sta_birthtime != stb_birthtime:
+            diffs.append(('birthtime', sta_birthtime, stb_birthtime))
 
     return diffs
 
@@ -89,7 +92,7 @@ class Processor:
             concurrency = multiprocessing.cpu_count()
 
         self._concurrency = concurrency
-        self._pool: multiprocessing.Pool = multiprocessing.Pool(self._concurrency)
+        self._pool: Pool = Pool(self._concurrency)
 
     def __enter__(self):
         return self

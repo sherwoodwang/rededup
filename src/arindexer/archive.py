@@ -9,7 +9,7 @@ from .store.archive_store import ArchiveStore
 from .store.archive_settings import ArchiveSettings
 from .commands.rebuild_refresh import do_rebuild, do_refresh, RebuildRefreshArgs
 from .commands.archive_importer import do_import, ImportArgs
-from .commands.analyzer import do_analyze, AnalyzeArgs
+from .commands.analyzer import do_analyze, AnalyzeArgs, DuplicateMatchRule
 
 
 class Archive:
@@ -82,8 +82,9 @@ class Archive:
         Returns:
             True if logging was configured, False otherwise
         """
-        log_path = self._settings.get('logging.path')
-        if log_path:
+        log_path_setting = self._settings.get('logging.path')
+        if log_path_setting:
+            log_path = str(log_path_setting)
             # Preserve current log level if already configured, otherwise default to INFO
             current_level = logging.root.level if logging.root.level != logging.NOTSET else logging.INFO
 
@@ -149,7 +150,7 @@ class Archive:
             ImportArgs(Path(source_archive_path), self._processor)
         ))
 
-    def analyze(self, input_paths: list[Path], comparison_rule: 'DuplicateMatchRule | None' = None):
+    def analyze(self, input_paths: list[Path], comparison_rule: DuplicateMatchRule | None = None):
         """Generate analysis reports for input paths against the archive.
 
         Creates a .report directory for each input path containing:
@@ -172,8 +173,6 @@ class Archive:
         archive_id = self._store.get_archive_id()
         if archive_id is None:
             raise RuntimeError("Archive ID not set. Please rebuild or refresh the archive first.")
-
-        from .commands.analyzer import DuplicateMatchRule
 
         if comparison_rule is None:
             comparison_rule = DuplicateMatchRule()  # Use default rule (atime excluded)

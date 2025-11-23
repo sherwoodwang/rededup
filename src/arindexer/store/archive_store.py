@@ -174,8 +174,9 @@ class ArchiveStore:
 
         self._alive = False
         self._file_hash_database = None
-        self._database.close()
-        self._database = None
+        if self._database is not None:
+            self._database.close()
+            self._database = None
 
     @property
     def archive_path(self) -> Path:
@@ -184,6 +185,9 @@ class ArchiveStore:
 
     def truncate(self):
         """Clear all file hash and signature entries, reset manifest."""
+        assert self._file_signature_database is not None
+        assert self._file_hash_database is not None
+
         self.write_manifest(ArchiveStore.MANIFEST_PENDING_ACTION, 'truncate')
         self.write_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM, None)
 
@@ -288,7 +292,8 @@ class ArchiveStore:
                 next_seq_num = max(next_seq_num, seq_num + 1)
 
                 # Check if this is the same path
-                existing_data: list[Any] = msgpack.loads(data)
+                existing_data = msgpack.loads(data)
+                assert isinstance(existing_data, list)
                 existing_path = Path(*existing_data[0])
                 if existing_path == path:
                     # Update existing entry
@@ -330,7 +335,8 @@ class ArchiveStore:
             # Search for the specific path entry and delete it
             for key, data in hash_db.iterator():
                 # Unpack: [path_components, digest, mtime_ns, ec_id]
-                stored_data: list[Any] = msgpack.loads(data)
+                stored_data = msgpack.loads(data)
+                assert isinstance(stored_data, list)
                 stored_path = Path(*stored_data[0])
 
                 # Check if this is the path we're looking for
@@ -358,7 +364,8 @@ class ArchiveStore:
         # Search through all entries for this hash
         for key, data in hash_db.iterator():
             # Unpack: [path_components, digest, mtime_ns, ec_id]
-            stored_data: list[Any] = msgpack.loads(data)
+            stored_data = msgpack.loads(data)
+            assert isinstance(stored_data, list)
             stored_path = Path(*stored_data[0])
 
             # Check if this is the path we're looking for
@@ -379,6 +386,7 @@ class ArchiveStore:
         for key, value in self._file_signature_database.iterator():
             # Unpack: [path_components, digest, mtime_ns, ec_id]
             data = msgpack.loads(value)
+            assert isinstance(data, list)
             path = Path(*data[0])
             signature = FileSignature(path, data[1], data[2], data[3])
             yield path, signature
@@ -477,6 +485,7 @@ class ArchiveStore:
             - (1, [Path("file3.txt"), Path("file4.txt")])  # Content Y (different from X)
         """
         # Get all entries for this digest
+        assert self._file_hash_database is not None
         digest_db = self._file_hash_database.prefixed_db(digest)
 
         # Group paths by EC ID
@@ -488,7 +497,8 @@ class ArchiveStore:
             ec_id = int.from_bytes(key[:4], 'big')
 
             # Deserialize path data (format: [component1, component2, ...])
-            path_components: list[str] = msgpack.loads(data)
+            path_components = msgpack.loads(data)
+            assert isinstance(path_components, list)
             path = Path(*path_components)
 
             # Add to the appropriate EC class
@@ -528,6 +538,7 @@ class ArchiveStore:
         ec_prefix = digest + ec_id.to_bytes(4, 'big')
 
         # Acquire exclusive access to this EC prefix
+        assert self._file_hash_database is not None
         with self._ec_prefix_lock.lock(ec_prefix):
             ec_db = self._file_hash_database.prefixed_db(ec_prefix)
 
@@ -556,7 +567,8 @@ class ArchiveStore:
                     next_seq_num = max(next_seq_num, seq_num + 1)
 
                     # Check if this path is already stored
-                    path_components: list[str] = msgpack.loads(data)
+                    path_components = msgpack.loads(data)
+                    assert isinstance(path_components, list)
                     existing_path = Path(*path_components)
                     paths_to_insert.discard(existing_path)
 
@@ -593,6 +605,7 @@ class ArchiveStore:
         ec_prefix = digest + ec_id.to_bytes(4, 'big')
 
         # Acquire exclusive access to this EC prefix
+        assert self._file_hash_database is not None
         with self._ec_prefix_lock.lock(ec_prefix):
             ec_db = self._file_hash_database.prefixed_db(ec_prefix)
 
@@ -617,7 +630,8 @@ class ArchiveStore:
                 keys_to_delete: list[bytes] = []
                 for key, data in hash_db.iterator():
                     # Check if this path should be deleted
-                    path_components: list[str] = msgpack.loads(data)
+                    path_components = msgpack.loads(data)
+                    assert isinstance(path_components, list)
                     existing_path = Path(*path_components)
 
                     if existing_path in paths_to_delete:
@@ -644,6 +658,7 @@ class ArchiveStore:
         else:
             hash_length = None
 
+        assert self._database is not None
         for key, value in self._database.iterator():
             key: bytes
             if key.startswith(ArchiveStore.__MANIFEST_PROPERTY_PREFIX):
@@ -657,7 +672,9 @@ class ArchiveStore:
                     ec_id = int.from_bytes(digest_and_rest[hash_length:hash_length+4], 'big')
                     path_hash_bytes = digest_and_rest[hash_length+4:hash_length+8]
                     seq_num, _ = decode_varint(digest_and_rest, hash_length+8)
-                    path_components: list[str] = msgpack.loads(value)
+                    loaded_path_components = msgpack.loads(value)
+                    assert isinstance(loaded_path_components, list)
+                    path_components: list[str] = loaded_path_components
                     path = '/'.join((urllib.parse.quote_plus(part) for part in path_components))
                     hex_digest = digest.hex()
                     hex_path_hash = '0x' + path_hash_bytes.hex()
@@ -678,10 +695,11 @@ class ArchiveStore:
                     seq_num = 0  # Fallback for malformed data
                 # Value: [path_components, digest, mtime_ns, ec_id]
                 data = msgpack.loads(value)
-                path_components = data[0]
-                digest = data[1]
-                mtime = data[2]
-                ec_id = data[3]
+                assert isinstance(data, list)
+                path_components: list[str] = data[0]
+                digest: bytes = data[1]
+                mtime: int = data[2]
+                ec_id: int = data[3]
                 quoted_path = '/'.join((urllib.parse.quote_plus(part) for part in path_components))
                 hex_digest = digest.hex()
                 mtime_string = \
