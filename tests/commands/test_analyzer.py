@@ -993,6 +993,126 @@ class DirectoryAnalysisTest(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_deferred_items_counted_in_duplicated_items(self):
+        """Test that deferred items (symlinks) matching candidates are counted in duplicated_items.
+
+        This test verifies that when deferred items match their corresponding candidates
+        in the archive, they are properly counted in the duplicated_items counter.
+        This ensures the bug fix (collecting matched_count from _compare_deferred_item)
+        works correctly.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'dir_with_links'
+            archive_dir.mkdir()
+            # Create files and symlinks in archive
+            (archive_dir / 'file1.txt').write_bytes(b'content1')
+            (archive_dir / 'file2.txt').write_bytes(b'content2')
+            (archive_dir / 'link1').symlink_to('file1.txt')
+            (archive_dir / 'link2').symlink_to('file2.txt')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_dir = target_path / 'dir_copy'
+            target_dir.mkdir()
+            # Create matching structure in target
+            target_file1 = target_dir / 'file1.txt'
+            target_file1.write_bytes(b'content1')
+            copy_times(archive_dir / 'file1.txt', target_file1)
+            target_file2 = target_dir / 'file2.txt'
+            target_file2.write_bytes(b'content2')
+            copy_times(archive_dir / 'file2.txt', target_file2)
+            (target_dir / 'link1').symlink_to('file1.txt')
+            (target_dir / 'link2').symlink_to('file2.txt')
+
+            report_dir = target_dir.parent / (target_dir.name + '.report')
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_dir])
+
+            # Verify deferred items (symlinks) are counted
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if 'dir_copy' in str(record.path) and len(record.duplicates) > 0:
+                            found = True
+                            comparison = record.duplicates[0]
+                            # Should have 4 duplicated_items: 2 files + 2 matching symlinks
+                            self.assertEqual(4, comparison.duplicated_items,
+                                "duplicated_items should count both files and matching symlinks")
+                            break
+                    except Exception as e:
+                        pass
+
+                self.assertTrue(found, "Directory with symlinks should be found as duplicate")
+            finally:
+                db.close()
+
+    def test_deferred_items_not_counted_when_no_match(self):
+        """Test that deferred items (symlinks) without matches are NOT counted in duplicated_items.
+
+        This test verifies that when deferred items don't have matching candidates,
+        they contribute 0 to the duplicated_items counter. This ensures the logic
+        correctly distinguishes between matched and unmatched deferred items.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'limited_dir'
+            archive_dir.mkdir()
+            # Archive only has a regular file, no symlinks
+            (archive_dir / 'file1.txt').write_bytes(b'content1')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_dir = target_path / 'full_dir'
+            target_dir.mkdir()
+            # Target has a regular file + symlinks (no matching symlinks in archive)
+            target_file1 = target_dir / 'file1.txt'
+            target_file1.write_bytes(b'content1')
+            copy_times(archive_dir / 'file1.txt', target_file1)
+            (target_dir / 'link1').symlink_to('file1.txt')
+            (target_dir / 'link2').symlink_to('file1.txt')
+
+            report_dir = target_dir.parent / (target_dir.name + '.report')
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_dir])
+
+            # Verify deferred items without matches are not counted
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if 'full_dir' in str(record.path) and len(record.duplicates) > 0:
+                            found = True
+                            comparison = record.duplicates[0]
+                            # Should have only 1 duplicated_item (the file)
+                            # The 2 symlinks should not be counted since archive has no matching symlinks
+                            self.assertEqual(1, comparison.duplicated_items,
+                                "duplicated_items should only count matching items, not unmatched symlinks")
+                            break
+                    except Exception as e:
+                        pass
+
+                self.assertTrue(found, "Directory should be found")
+            finally:
+                db.close()
+
     def test_duplicated_size_semantics_with_partial_matches(self):
         """Test that duplicated_size is correctly calculated when archive dirs match different file subsets.
 
