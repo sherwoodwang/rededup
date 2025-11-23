@@ -179,23 +179,33 @@ def archive_indexer():
     parser_describe = subparsers.add_parser(
         'describe',
         help='Show duplicate information from existing analysis reports',
-        description='Displays duplicate information for a file or directory from existing .report directories. '
-                    'Searches upward from the specified path to find relevant reports.',
+        description='Displays duplicate information for files or directories from existing .report directories. '
+                    'Searches upward from the specified path to find relevant reports. '
+                    'If no path is provided, describes the current working directory.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent('''
             Examples:
+              arindexer describe
               arindexer describe /home/user/documents/file.txt
               arindexer describe /home/user/documents
+              arindexer describe --directory /home/user/documents
+              arindexer describe /path/file1 /path/file2 /path/file3
               arindexer describe --all /home/user/documents/file.txt
               arindexer describe --limit 5 --sort-by path /home/user/documents
 
-            For files: Shows list of duplicates found in the archive.
-            For directories: Shows summary of duplicated files with sizes.
+            Single path: Shows list of duplicates found in the archive.
+            Directory with --directory: Shows only directory info (no contents table).
+            Multiple paths: Shows all paths in a table (no duplicates details).
             ''').strip())
     parser_describe.add_argument(
-        'path',
+        'paths',
+        nargs='*',
         metavar='PATH',
-        help='File or directory to describe from analysis reports')
+        help='File or directory to describe from analysis reports (default: current working directory)')
+    parser_describe.add_argument(
+        '--directory',
+        action='store_true',
+        help='Describe only the path itself, not its contents (for directories only)')
     parser_describe.add_argument(
         '--all',
         action='store_true',
@@ -215,6 +225,10 @@ def archive_indexer():
         choices=['dup-size', 'dup-items', 'total-size', 'name'],
         default='dup-size',
         help='Sort directory children by: dup-size (duplicated size descending, default), dup-items (duplicated items descending), total-size (total size descending), or name (alphabetically)')
+    parser_describe.add_argument(
+        '--keep-input-order',
+        action='store_true',
+        help='Keep the input order of paths when multiple paths are provided (default: sort by same criteria as directory children)')
     parser_describe.add_argument(
         '--bytes',
         action='store_true',
@@ -347,7 +361,11 @@ def _analyze(archive: Archive, output: StandardOutput, args):
 def _describe(output: StandardOutput, args):
     from .commands.analyzer import do_describe, DescribeOptions
 
-    path = Path(args.path)
+    # Handle default path (current working directory if no paths provided)
+    if not args.paths:
+        paths = [Path.cwd()]
+    else:
+        paths = [Path(p) for p in args.paths]
 
     # Determine limit
     if args.all:
@@ -364,10 +382,25 @@ def _describe(output: StandardOutput, args):
         sort_by=args.sort_by,
         sort_children=args.sort_children,
         use_bytes=args.bytes,
-        show_details=args.details
+        show_details=args.details,
+        directory_only=args.directory,
+        keep_input_order=args.keep_input_order
     )
 
-    do_describe(path, options)
+    # If directory flag is set with multiple paths, error
+    if args.directory and len(paths) > 1:
+        print("Error: --directory flag can only be used with a single path")
+        return
+
+    # If directory flag is set, validate all paths are directories
+    if args.directory:
+        for path in paths:
+            if path.exists() and not path.is_dir():
+                print(f"Error: --directory flag can only be used with directories, not files: {path}")
+                return
+
+    # Always pass a list to do_describe
+    do_describe(paths, options)
 
 
 @needs_archive

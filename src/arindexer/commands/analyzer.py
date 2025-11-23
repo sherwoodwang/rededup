@@ -1439,70 +1439,81 @@ class DescribeOptions:
         sort_children: Sorting criterion for directory children - 'dup-size', 'dup-items', 'total-size', or 'name'
         use_bytes: If True, show sizes in bytes instead of human-readable format
         show_details: If True, show report metadata (Report, Analyzed, Archive, Timestamp)
+        directory_only: If True, describe only the directory itself, not its contents
+        keep_input_order: If True, keep input order of multiple paths instead of sorting
     """
     limit: int | None = 1
     sort_by: str = 'size'
     sort_children: str = 'dup-size'
     use_bytes: bool = False
     show_details: bool = False
+    directory_only: bool = False
+    keep_input_order: bool = False
 
 
-def do_describe(target_path: Path, options: DescribeOptions | None = None) -> None:
-    """Describe duplicate information for a file or directory from analysis reports.
+def do_describe(paths: list[Path], options: DescribeOptions | None = None) -> None:
+    """Describe duplicate information for files or directories from analysis reports.
 
     Args:
-        target_path: Path to the file or directory to describe
+        paths: List of paths to describe. Single element for single path, multiple for table display
         options: Options for controlling duplicate display
     """
     if options is None:
         options = DescribeOptions()
 
-    # Resolve target path
-    target_path = target_path.resolve()
+    # Resolve all paths
+    paths = [p.resolve() for p in paths]
 
-    # Check if target exists
-    if not target_path.exists():
-        print(f"Error: Path does not exist: {target_path}")
-        return
+    # Check if all paths exist
+    for path in paths:
+        if not path.exists():
+            print(f"Error: Path does not exist: {path}")
+            return
 
-    # Find report directory
-    analyzed_path = find_report_for_path(target_path)
-    if analyzed_path is None:
-        print(f"No analysis report found for: {target_path}")
-        print(f"Run 'arindexer analyze {target_path}' to generate a report.")
-        return
+    # Find a common analyzed path that works for all paths
+    report_info = []
+    for path in paths:
+        analyzed_path = find_report_for_path(path)
+        if analyzed_path is None:
+            print(f"No analysis report found for: {path}")
+            print(f"Run 'arindexer analyze {path}' to generate a report.")
+            return
+        report_info.append((path, analyzed_path))
 
+    # Use the first analyzed path as context
+    analyzed_path = report_info[0][1]
     report_dir = get_report_directory_path(analyzed_path)
 
-    # Read report
     try:
         with ReportReader(report_dir, analyzed_path) as reader:
             manifest = reader.read_manifest()
 
-            # Show report metadata if requested
-            if options.show_details:
-                print(f"Report: {report_dir}")
-                print(f"Analyzed: {analyzed_path}")
-                print(f"Archive: {manifest.archive_path}")
-                print(f"Timestamp: {manifest.timestamp}")
-                print()
+            # Normalize paths to relative paths within the analyzed directory
+            relative_paths = []
+            for path in paths:
+                if path == analyzed_path:
+                    relative_path = Path(analyzed_path.name)
+                else:
+                    relative_path = Path(analyzed_path.name) / path.relative_to(analyzed_path)
+                relative_paths.append(relative_path)
 
-            # Calculate relative path within the analyzed directory
-            if target_path == analyzed_path:
-                # Target is the analyzed path itself
-                relative_path = Path(analyzed_path.name)
+            # Decide flow based on number of paths
+            if len(paths) > 1:
+                # Multiple paths: display as table
+                formatter = MultiplePathsDescribeFormatter(reader, relative_paths, manifest, options)
+                formatter.describe()
             else:
-                # Target is inside the analyzed path
-                relative_path = Path(analyzed_path.name) / target_path.relative_to(analyzed_path)
+                # Single path: display details
+                target_path = paths[0]
 
-            # Check if target is a directory and create appropriate formatter
-            if target_path.is_dir():
-                formatter = DirectoryDescribeFormatter(reader, relative_path, manifest, options)
-            else:
-                formatter = FileDescribeFormatter(reader, relative_path, manifest, options)
+                # Check if target is a directory and create appropriate formatter
+                if target_path.is_dir():
+                    formatter = DirectoryDescribeFormatter(reader, relative_paths, manifest, options)
+                else:
+                    formatter = FileDescribeFormatter(reader, relative_paths, manifest, options)
 
-            # Execute the describe operation
-            formatter.describe()
+                # Execute the describe operation
+                formatter.describe()
 
     except FileNotFoundError as e:
         print(f"Error reading report: {e}")
@@ -1510,26 +1521,96 @@ def do_describe(target_path: Path, options: DescribeOptions | None = None) -> No
         print(f"Error: {e}")
 
 
+class SortableRowData(NamedTuple):
+    """Row data containing both raw values for sorting and formatted strings for display.
+
+    Fields are ordered to match the standard COLUMNS for display purposes.
+    """
+    # Display fields (in COLUMNS order)
+    name: str
+    type_str: str
+    total_size_str: str
+    dup_size_str: str
+    size_ratio_str: str
+    total_items_str: str
+    dup_items_str: str
+    items_ratio_str: str
+    dups_str: str
+    max_match_dup_size_str: str
+    max_ratio_str: str
+    best_status_str: str
+    in_report_str: str
+    # Raw values (for sorting)
+    is_dir: bool
+    total_size: int
+    dup_size: int
+    dups: int
+    match_dup_size: int
+    status_rank: int
+    total_items: int
+    dup_items: int
+    size_ratio: float
+    items_ratio: float
+    max_ratio: float
+    in_report: bool
+
+
 class DescribeFormatter(ABC):
     """Base class for formatting describe output using template pattern."""
 
-    def __init__(self, reader: ReportReader, relative_path: Path, manifest: ReportManifest,
+    # Column definitions shared by all derived formatters
+    # Format: (field_name, display_name, align_right)
+    COLUMNS: list[tuple[str, str, bool]] = [
+        ('name', 'Name', False),
+        ('type_str', 'Type', False),
+        ('total_size_str', 'Total Size', True),
+        ('dup_size_str', 'Dup Size', True),
+        ('size_ratio_str', 'Size %', True),
+        ('total_items_str', 'Total Items', True),
+        ('dup_items_str', 'Dup Items', True),
+        ('items_ratio_str', 'Items %', True),
+        ('dups_str', 'Dups', True),
+        ('max_match_dup_size_str', 'Max Match', True),
+        ('max_ratio_str', 'Max %', True),
+        ('best_status_str', 'Status', False),
+        ('in_report_str', 'In Report', False),
+    ]
+
+    def __init__(self, reader: ReportReader, relative_paths: list[Path], manifest: ReportManifest,
                  options: DescribeOptions | None = None):
         """Initialize formatter.
 
         Args:
             reader: ReportReader instance with open database
-            relative_path: Path relative to the analyzed target
+            relative_paths: Paths relative to the analyzed target
             manifest: Report manifest
             options: Options for controlling duplicate display
         """
         self.reader = reader
-        self.relative_path = relative_path
+        self.relative_paths = relative_paths
         self.manifest = manifest
         self.options = options if options is not None else DescribeOptions()
 
+    @property
+    def relative_path(self) -> Path:
+        """Get the first relative path (for single-path formatters)."""
+        assert len(self.relative_paths) == 1, "relative_paths must contain exactly 1 element for single-path formatters"
+        return self.relative_paths[0]
+
+    @abstractmethod
     def describe(self) -> None:
-        """Template method that describes the item."""
+        pass
+
+    def _describe_item(self) -> None:
+        """Template method that describes the item's duplicates.
+
+        Displays report metadata, duplicate records, and item-specific details.
+        """
+        # Print report metadata if details are requested
+        if self.options.show_details:
+            self._print_report_metadata()
+            print()
+
         record = self.reader.read_duplicate_record(self.relative_path)
 
         if record is None or not record.duplicates:
@@ -1544,13 +1625,202 @@ class DescribeFormatter(ABC):
         # Print unified header
         self._print_header(record)
 
+        # Skip duplicates and details if directory_only is set
+        if self.options.directory_only:
+            return
+
         # Print unified duplicates section
         self._print_duplicates(record)
 
         # Print additional details (only for directories)
         self._print_details(record)
 
-    def _print_attribute_definitions(self) -> None:
+    def _print_report_metadata(self) -> None:
+        """Print report metadata including path and archive information."""
+        print(f"Report: {self.reader.report_dir}")
+        print(f"Analyzed: {self.reader.analyzed_path}")
+        print(f"Archive: {self.manifest.archive_path}")
+        print(f"Timestamp: {self.manifest.timestamp}")
+
+    def _build_row_data(self, name: str, is_dir: bool, record: DuplicateRecord | None) -> SortableRowData:
+        """Build a SortableRowData entry from a DuplicateRecord.
+
+        Args:
+            name: The item name
+            is_dir: Whether the item is a directory
+            record: The DuplicateRecord, or None if not in report
+
+        Returns:
+            SortableRowData with all raw and formatted values
+        """
+        type_str = "Dir" if is_dir else "File"
+
+        if record is None:
+            return SortableRowData(
+                name=name, is_dir=is_dir,
+                total_size=0, dup_size=0, dups=0, match_dup_size=0, status_rank=0,
+                total_items=0, dup_items=0, size_ratio=0.0, items_ratio=0.0, max_ratio=0.0, in_report=False,
+                type_str=type_str, total_size_str="-", dup_size_str="0" if self.options.use_bytes else "0 B", dups_str="0",
+                max_match_dup_size_str="0" if self.options.use_bytes else "0 B", best_status_str="-",
+                total_items_str="-", dup_items_str="-", size_ratio_str="-", items_ratio_str="-",
+                max_ratio_str="-", in_report_str="No")
+
+        if not record.duplicates:
+            total_size_str = str(record.total_size) if self.options.use_bytes else format_size(record.total_size)
+            return SortableRowData(
+                name=name, is_dir=is_dir,
+                total_size=record.total_size, dup_size=0, dups=0, match_dup_size=0, status_rank=0,
+                total_items=record.total_items, dup_items=0, size_ratio=0.0, items_ratio=0.0, max_ratio=0.0, in_report=True,
+                type_str=type_str, total_size_str=total_size_str, dup_size_str="0" if self.options.use_bytes else "0 B", dups_str="0",
+                max_match_dup_size_str="0" if self.options.use_bytes else "0 B", best_status_str="-",
+                total_items_str=str(record.total_items), dup_items_str="0", size_ratio_str="0.0%",
+                items_ratio_str="0.0%", max_ratio_str="0.0%", in_report_str="Yes")
+
+        # Has duplicates
+        total_size_str = str(record.total_size) if self.options.use_bytes else format_size(record.total_size)
+        dup_size_str = str(record.duplicated_size) if self.options.use_bytes else format_size(record.duplicated_size)
+
+        # Find the duplicate with highest duplicated_size and use its status
+        max_match_dup = max(record.duplicates, key=lambda dup: dup.duplicated_size)
+        max_match_dup_size = max_match_dup.duplicated_size
+        max_match_dup_size_str = str(max_match_dup_size) if self.options.use_bytes else format_size(max_match_dup_size)
+
+        # Get status from the max match duplicate
+        if max_match_dup.is_identical:
+            best_status_str = "Identical"
+            best_status_rank = 2
+        elif max_match_dup.is_superset:
+            best_status_str = "Superset"
+            best_status_rank = 1
+        else:
+            best_status_str = "Partial"
+            best_status_rank = 0
+
+        # Calculate ratios
+        size_ratio = record.duplicated_size / record.total_size if record.total_size > 0 else 0.0
+        items_ratio = record.duplicated_items / record.total_items if record.total_items > 0 else 0.0
+        max_ratio = max_match_dup_size / record.total_size if record.total_size > 0 else 0.0
+
+        size_ratio_str = self._format_percentage(record.duplicated_size, record.total_size)
+        items_ratio_str = self._format_percentage(record.duplicated_items, record.total_items)
+        max_ratio_str = self._format_percentage(max_match_dup_size, record.total_size)
+
+        return SortableRowData(
+            name=name, is_dir=is_dir,
+            total_size=record.total_size, dup_size=record.duplicated_size,
+            dups=len(record.duplicates), match_dup_size=max_match_dup_size, status_rank=best_status_rank,
+            total_items=record.total_items, dup_items=record.duplicated_items,
+            size_ratio=size_ratio, items_ratio=items_ratio, max_ratio=max_ratio, in_report=True,
+            type_str=type_str, total_size_str=total_size_str, dup_size_str=dup_size_str,
+            dups_str=str(len(record.duplicates)), max_match_dup_size_str=max_match_dup_size_str,
+            best_status_str=best_status_str, total_items_str=str(record.total_items),
+            dup_items_str=str(record.duplicated_items), size_ratio_str=size_ratio_str,
+            items_ratio_str=items_ratio_str, max_ratio_str=max_ratio_str, in_report_str="Yes")
+
+    @staticmethod
+    def _format_percentage(numerator: int | float, denominator: int | float) -> str:
+        """Format percentage with ~ prefix if result is due to rounding.
+
+        Args:
+            numerator: The numerator value
+            denominator: The denominator value
+
+        Returns:
+            Formatted percentage string with ~ prefix if rounded, otherwise exact percentage
+        """
+        if denominator == 0:
+            return "0.0%"
+
+        ratio = numerator / denominator
+        percent_str = f"{ratio:.1%}"
+
+        # Check if 100.0% is due to rounding (numerator != denominator)
+        if percent_str == "100.0%" and numerator != denominator:
+            return "~100.0%"
+        # Check if 0.0% is due to rounding (numerator != 0)
+        elif percent_str == "0.0%" and numerator != 0:
+            return "~0.0%"
+
+        return percent_str
+
+    @staticmethod
+    def _print_formatted_table(columns: list[tuple[str, str, bool]], rows: list[SortableRowData]) -> None:
+        """Print a formatted table with the given columns and rows.
+
+        This is the low-level table printing implementation that handles all
+        formatting, alignment, and width calculation.
+
+        Args:
+            columns: List of (field_name, display_name, align_right) tuples for column definitions.
+            rows: List of SortableRowData rows to display
+        """
+        if not rows:
+            return
+
+        # Extract field names and display headers from columns
+        field_names = [col[0] for col in columns]
+        headers = [col[1] for col in columns]
+
+        # Calculate column widths based on actual field values
+        col_widths = [max(max(len(str(getattr(row, field_names[i]))) for row in rows), len(headers[i]))
+                      for i in range(len(headers))]
+
+        # Build format template for header and rows
+        header_parts = []
+        row_format_specs = []
+        for i in range(len(columns)):
+            align = '>' if columns[i][2] else '<'
+            header_parts.append(f"{headers[i]:{align}{col_widths[i]}}")
+            row_format_specs.append(f"{{:{align}{col_widths[i]}}}")
+        row_template = "  ".join(row_format_specs)
+
+        # Print header
+        header = "  ".join(header_parts)
+        print(header)
+        print("-" * len(header))
+
+        # Print rows using field names to extract values
+        for row in rows:
+            row_values = [str(getattr(row, field_names[i])) for i in range(len(field_names))]
+            print(row_template.format(*row_values))
+
+    def _print_table(self, rows: list[SortableRowData]) -> None:
+        """Print a formatted table with standard columns.
+
+        This is a convenience method that uses the class's standard COLUMNS
+        definition for table formatting. Use this for displaying data with
+        the default column structure.
+
+        Args:
+            rows: List of SortableRowData rows to display
+        """
+        self._print_formatted_table(self.COLUMNS, rows)
+
+    def _sort_and_format_rows(self, rows_data: list[SortableRowData]) -> list[SortableRowData]:
+        """Sort rows by the configured sort criteria.
+
+        Args:
+            rows_data: List of SortableRowData to sort
+
+        Returns:
+            List of SortableRowData sorted by configured criteria
+        """
+        def sort_key(row: SortableRowData) -> tuple[Any, ...]:
+            if self.options.sort_children == 'dup-size':
+                return -row.dup_size, -row.dups, -row.total_size
+            elif self.options.sort_children == 'dup-items':
+                return -row.dups, -row.dup_size, -row.total_size
+            elif self.options.sort_children == 'total-size':
+                return (-row.total_size,)
+            elif self.options.sort_children == 'name':
+                return (row.name,)
+            else:
+                return -row.dup_size, -row.dups, -row.total_size
+
+        return sorted(rows_data, key=sort_key)
+
+    @staticmethod
+    def _print_attribute_definitions() -> None:
         """Print definitions of attributes and columns.
 
         This is shown when --details flag is enabled.
@@ -1759,6 +2029,9 @@ class DescribeFormatter(ABC):
 class FileDescribeFormatter(DescribeFormatter):
     """Formatter for describing files."""
 
+    def describe(self) -> None:
+        self._describe_item()
+
     def _get_item_type(self) -> str:
         """Get the item type string."""
         return "File"
@@ -1784,34 +2057,12 @@ class FileDescribeFormatter(DescribeFormatter):
 class DirectoryDescribeFormatter(DescribeFormatter):
     """Formatter for describing directories."""
 
+    def describe(self) -> None:
+        self._describe_item()
+
     def _get_item_type(self) -> str:
         """Get the item type string."""
         return "Directory"
-
-    def _format_percentage(self, numerator: int | float, denominator: int | float) -> str:
-        """Format percentage with ~ prefix if result is due to rounding.
-
-        Args:
-            numerator: The numerator value
-            denominator: The denominator value
-
-        Returns:
-            Formatted percentage string with ~ prefix if rounded, otherwise exact percentage
-        """
-        if denominator == 0:
-            return "0.0%"
-
-        ratio = numerator / denominator
-        percent_str = f"{ratio:.1%}"
-
-        # Check if 100.0% is due to rounding (numerator != denominator)
-        if percent_str == "100.0%" and numerator != denominator:
-            return "~100.0%"
-        # Check if 0.0% is due to rounding (numerator != 0)
-        elif percent_str == "0.0%" and numerator != 0:
-            return "~0.0%"
-
-        return percent_str
 
     def _print_details(self, record: DuplicateRecord) -> None:
         """Print child files information using filesystem listing first."""
@@ -1834,18 +2085,10 @@ class DirectoryDescribeFormatter(DescribeFormatter):
             print("  Directory is empty")
             return
 
-        # Prepare table data
-        # Store both raw values (for sorting) and formatted strings (for display)
-        # Format: (name, is_dir, total_size_raw, dup_size_raw, dups_raw, max_match_dup_size_raw, best_status_rank,
-        #          total_items_raw, dup_items_raw, size_ratio, items_ratio, max_ratio, in_report,
-        #          type_str, total_size_str, dup_size_str, dups_str, max_match_dup_size_str, best_status_str,
-        #          total_items_str, dup_items_str, size_ratio_str, items_ratio_str, max_ratio_str, in_report_str)
-        rows_data: list[tuple[str, bool, int, int, int, int, int, int, int, float, float, float, bool,
-        str, str, str, str, str, str, str, str, str, str, str, str]] = []
+        # Prepare table data using the shared helper method
+        rows_data: list[SortableRowData] = []
         for child_path in children:
             child_name = child_path.name
-            is_dir = child_path.is_dir()
-            type_str = "Dir" if is_dir else "File"
 
             # Construct the relative path for this child
             child_relative_path: Path = self.relative_path / child_name
@@ -1853,161 +2096,56 @@ class DirectoryDescribeFormatter(DescribeFormatter):
             # Query the report for this child
             child_record = self.reader.read_duplicate_record(child_relative_path)
 
-            if child_record is None:
-                # Child exists on disk but not in report (no duplicates found)
-                # Total size is not available in report, but dup size is known to be 0
-                total_size_str = "-"
-                dup_size_str = "0" if self.options.use_bytes else "0 B"
-                max_match_dup_size_str = "0" if self.options.use_bytes else "0 B"
-                best_status_str = "-"
-                rows_data.append((child_name, is_dir, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, False,
-                                  type_str, total_size_str, dup_size_str, "0", max_match_dup_size_str, best_status_str,
-                                  "-", "-", "-", "-", "-", "No"))
-            elif child_record.duplicates:
-                total_size_str = str(child_record.total_size) if self.options.use_bytes else format_size(
-                    child_record.total_size)
-                dup_size_str = str(child_record.duplicated_size) if self.options.use_bytes else format_size(
-                    child_record.duplicated_size)
+            # Build row data using the helper method
+            row_data = self._build_row_data(child_name, child_path.is_dir(), child_record)
+            rows_data.append(row_data)
 
-                # Find the duplicate with highest duplicated_size and use its status
-                max_match_dup = max(child_record.duplicates, key=lambda dup: dup.duplicated_size)
-                max_match_dup_size = max_match_dup.duplicated_size
-                max_match_dup_size_str = str(max_match_dup_size) if self.options.use_bytes else format_size(
-                    max_match_dup_size)
+        # Sort and format rows using the shared helper method
+        rows = self._sort_and_format_rows(rows_data)
 
-                # Get status from the max match duplicate
-                if max_match_dup.is_identical:
-                    best_status_str = "Identical"
-                    best_status_rank = 2
-                elif max_match_dup.is_superset:
-                    best_status_str = "Superset"
-                    best_status_rank = 1
-                else:
-                    best_status_str = "Partial"
-                    best_status_rank = 0
+        # Print table using the shared method with column alignment
+        self._print_table(rows)
 
-                # Calculate ratios
-                size_ratio = child_record.duplicated_size / child_record.total_size if child_record.total_size > 0 else 0.0
-                items_ratio = child_record.duplicated_items / child_record.total_items if child_record.total_items > 0 else 0.0
-                max_ratio = max_match_dup_size / child_record.total_size if child_record.total_size > 0 else 0.0
 
-                size_ratio_str = self._format_percentage(child_record.duplicated_size, child_record.total_size)
-                items_ratio_str = self._format_percentage(child_record.duplicated_items, child_record.total_items)
-                max_ratio_str = self._format_percentage(max_match_dup_size, child_record.total_size)
+class MultiplePathsDescribeFormatter(DescribeFormatter):
+    """Formatter for describing multiple paths in a single table."""
 
-                rows_data.append((
-                    child_name,
-                    is_dir,
-                    child_record.total_size,
-                    child_record.duplicated_size,
-                    len(child_record.duplicates),
-                    max_match_dup_size,
-                    best_status_rank,
-                    child_record.total_items,
-                    child_record.duplicated_items,
-                    size_ratio,
-                    items_ratio,
-                    max_ratio,
-                    True,
-                    type_str,
-                    total_size_str,
-                    dup_size_str,
-                    str(len(child_record.duplicates)),
-                    max_match_dup_size_str,
-                    best_status_str,
-                    str(child_record.total_items),
-                    str(child_record.duplicated_items),
-                    size_ratio_str,
-                    items_ratio_str,
-                    max_ratio_str,
-                    "Yes"
-                ))
+    def _get_item_type(self) -> str:
+        """Get the item type string."""
+        return "Multiple Paths"
+
+    def describe(self) -> None:
+        """Display multiple paths in a table format."""
+        # Print report metadata if details are requested
+        if self.options.show_details:
+            self._print_report_metadata()
+            print()
+
+        rows_data: list[SortableRowData] = []
+
+        for relative_path in self.relative_paths:
+            # Reconstruct the path from relative_path using analyzed_path
+            analyzed_path = self.reader.analyzed_path
+            if relative_path == Path(analyzed_path.name):
+                # Path is the analyzed directory itself
+                path = analyzed_path
             else:
-                total_size_str = str(child_record.total_size) if self.options.use_bytes else format_size(
-                    child_record.total_size)
-                dup_size_str = "0" if self.options.use_bytes else "0 B"
-                max_match_dup_size_str = "0" if self.options.use_bytes else "0 B"
-                best_status_str = "-"
-                rows_data.append((
-                    child_name,
-                    is_dir,
-                    child_record.total_size,
-                    0,
-                    0,
-                    0,
-                    0,
-                    child_record.total_items,
-                    0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    True,
-                    type_str,
-                    total_size_str,
-                    dup_size_str,
-                    "0",
-                    max_match_dup_size_str,
-                    best_status_str,
-                    str(child_record.total_items),
-                    "0",
-                    "0.0%",
-                    "0.0%",
-                    "0.0%",
-                    "Yes"
-                ))
+                # Path is relative to analyzed directory - reconstruct it
+                path = analyzed_path / relative_path.relative_to(analyzed_path.name)
 
-        # Sort rows according to options
-        def sort_key(row: tuple[str, bool, int, int, int, int, int, int, int, float, float, float, bool,
-        str, str, str, str, str, str, str, str, str, str, str, str]) -> tuple[Any, ...]:
-            name, child_is_dir, total_size, dup_size, dups, match_dup_size, status_rank, total_items_val, dup_items_val, size_ratio_val, items_ratio_val, max_ratio_val, in_report, *_ = row
+            # Get record from report using pre-computed relative path
+            record = self.reader.read_duplicate_record(relative_path)
 
-            if self.options.sort_children == 'dup-size':
-                # Sort by dup_size descending, then dup_items descending, then total_size descending
-                return -dup_size, -dups, -total_size
-            elif self.options.sort_children == 'dup-items':
-                # Sort by dups descending, then dup_size descending, then total_size descending
-                return -dups, -dup_size, -total_size
-            elif self.options.sort_children == 'total-size':
-                # Sort by total_size descending
-                return (-total_size,)
-            elif self.options.sort_children == 'name':
-                # Sort alphabetically by name
-                return (name,)
-            else:
-                # Default to dup-size
-                return -dup_size, -dups, -total_size
+            # Build row data using the helper method
+            row_data = self._build_row_data(path.name, path.is_dir(), record)
+            rows_data.append(row_data)
 
-        rows_data = sorted(rows_data, key=sort_key)
+        # Sort rows if not keeping input order, otherwise use original order
+        if self.options.keep_input_order:
+            rows = rows_data
+        else:
+            rows = self._sort_and_format_rows(rows_data)
 
-        # Extract formatted strings for display
-        # Order: name, type, total_size, dup_size, size_ratio, total_items, dup_items, items_ratio,
-        #        dups, max_match_dup_size, max_ratio, status, in_report
-        rows: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str, str]] = [
-            (row[0], row[13], row[14], row[15], row[21], row[19], row[20], row[22], row[16], row[17], row[23], row[18],
-             row[24]) for row in rows_data
-        ]
-
-        # Calculate column widths
-        col1_width = max(len(row[0]) for row in rows)
-        col2_width = max(max(len(row[1]) for row in rows), len('Type'))
-        col3_width = max(max(len(row[2]) for row in rows), len('Total Size'))
-        col4_width = max(max(len(row[3]) for row in rows), len('Dup Size'))
-        col5_width = max(max(len(row[4]) for row in rows), len('Size %'))
-        col6_width = max(max(len(row[5]) for row in rows), len('Total Items'))
-        col7_width = max(max(len(row[6]) for row in rows), len('Dup Items'))
-        col8_width = max(max(len(row[7]) for row in rows), len('Items %'))
-        col9_width = max(max(len(row[8]) for row in rows), len('Dups'))
-        col10_width = max(max(len(row[9]) for row in rows), len('Max Match'))
-        col11_width = max(max(len(row[10]) for row in rows), len('Max %'))
-        col12_width = max(max(len(row[11]) for row in rows), len('Status'))
-        col13_width = max(len(row[12]) for row in rows)
-
-        # Print header (numeric columns right-aligned)
-        header = f"{'Name':<{col1_width}}  {'Type':<{col2_width}}  {'Total Size':>{col3_width}}  {'Dup Size':>{col4_width}}  {'Size %':>{col5_width}}  {'Total Items':>{col6_width}}  {'Dup Items':>{col7_width}}  {'Items %':>{col8_width}}  {'Dups':>{col9_width}}  {'Max Match':>{col10_width}}  {'Max %':>{col11_width}}  {'Status':<{col12_width}}  {'In Report':<{col13_width}}"
-        print(header)
-        print("-" * len(header))
-
-        # Print rows (numeric columns right-aligned)
-        for row in rows:
-            line = f"{row[0]:<{col1_width}}  {row[1]:<{col2_width}}  {row[2]:>{col3_width}}  {row[3]:>{col4_width}}  {row[4]:>{col5_width}}  {row[5]:>{col6_width}}  {row[6]:>{col7_width}}  {row[7]:>{col8_width}}  {row[8]:>{col9_width}}  {row[9]:>{col10_width}}  {row[10]:>{col11_width}}  {row[11]:<{col12_width}}  {row[12]:<{col13_width}}"
-            print(line)
+        # Print table
+        if rows:
+            self._print_table(rows)
