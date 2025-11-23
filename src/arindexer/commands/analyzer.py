@@ -1625,12 +1625,12 @@ class DescribeFormatter(ABC):
         # Print unified header
         self._print_header(record)
 
-        # Skip duplicates and details if directory_only is set
-        if self.options.directory_only:
-            return
-
         # Print unified duplicates section
         self._print_duplicates(record)
+
+        # Skip directory contents table if directory_only is set
+        if self.options.directory_only:
+            return
 
         # Print additional details (only for directories)
         self._print_details(record)

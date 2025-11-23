@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import sys
 import textwrap
 from functools import wraps
 from pathlib import Path
@@ -389,15 +390,15 @@ def _describe(output: StandardOutput, args):
 
     # If directory flag is set with multiple paths, error
     if args.directory and len(paths) > 1:
-        print("Error: --directory flag can only be used with a single path")
-        return
+        print("Error: --directory flag can only be used with a single path", file=sys.stderr)
+        sys.exit(1)
 
-    # If directory flag is set, validate all paths are directories
+    # If directory flag is set, validate path is a directory
     if args.directory:
         for path in paths:
-            if path.exists() and not path.is_dir():
-                print(f"Error: --directory flag can only be used with directories, not files: {path}")
-                return
+            if not path.is_dir():
+                print(f"Error: --directory flag can only be used with directories, not files: {path}", file=sys.stderr)
+                sys.exit(1)
 
     # Always pass a list to do_describe
     do_describe(paths, options)
