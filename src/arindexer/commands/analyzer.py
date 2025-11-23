@@ -438,7 +438,8 @@ class DuplicateRecord:
                 comparison.is_superset
             ])
 
-        return msgpack.dumps([path_components, duplicate_data, self.total_size, self.total_items, self.duplicated_size, self.duplicated_items])
+        return msgpack.dumps([path_components, duplicate_data, self.total_size, self.total_items, self.duplicated_size,
+                              self.duplicated_items])
 
     @classmethod
     def from_msgpack(cls, data: bytes) -> 'DuplicateRecord':
@@ -550,7 +551,8 @@ class DeferredResult(FileAnalysisResult):
         base_name: Base name of the file or directory, deduced from report_path
     """
 
-    def __init__(self, report_path: Path, total_size: int, total_items: int, duplicated_size: int, duplicated_items: int):
+    def __init__(self, report_path: Path, total_size: int, total_items: int, duplicated_size: int,
+                 duplicated_items: int):
         """Initialize a DeferredResult.
 
         Args:
@@ -924,7 +926,9 @@ class AnalyzeProcessor:
         relative_path: Path = file_path.relative_to(self._input_path.parent)
 
         future: asyncio.Future[FileAnalysisResult] = asyncio.Future()
-        future.set_result(DeferredResult(relative_path, context.stat.st_size, 1, 0, 0))
+        # Even through it is feasible to get file size for some special files, like symlinks, on some systems, this
+        # is avoided here for consistency and simplicity.
+        future.set_result(DeferredResult(relative_path, 0, 1, 0, 0))
         # Register this deferred item with its parent directory's listener
         self._listener_coordinator.register_child_with_parent(context, future)
 
@@ -995,17 +999,75 @@ class AnalyzeProcessor:
         # Early return or defer based on presence of candidate dirs and deferred items
         if not candidate_matches:
             if not deferred_items:
-                return ImmediateResult(context.relative_path, [], total_size, total_items, duplicated_size, duplicated_items)
+                return ImmediateResult(context.relative_path, [], total_size, total_items, duplicated_size,
+                                       duplicated_items)
             else:
                 return DeferredResult(context.relative_path, total_size, total_items, duplicated_size, duplicated_items)
+
+        # Process all deferred items across all candidate directories, aggregating in place
+        deferred_reducers: dict[Path, MetadataMatchReducer] = {
+            d: MetadataMatchReducer(self._comparison_rule) for d in candidate_matches.keys()
+        }
+        # Prepare a list for stable ordering of candidate directories
+        candidate_dirs = list(candidate_matches.keys())
+
+        for base_name in deferred_items:
+            matched_count, results = self._compare_deferred_item(
+                dir_path / base_name,
+                [self._archive_path / candidate_dir / base_name for candidate_dir in candidate_dirs]
+            )
+
+            duplicated_items += matched_count
+
+            for candidate_dir, result in zip(candidate_dirs, results):
+                deferred_reducers[candidate_dir].aggregate_from_match(result)
+
+        deferred_results = {
+            candidate_dir: deferred_reducers[candidate_dir].create_duplicate_match(
+                candidate_dir, non_identical=False, non_superset=False)
+            for candidate_dir in candidate_dirs}
 
         # Compare this directory with each candidate archive directory
         metadata_comparisons: list[DuplicateMatch] = []
 
         for candidate_dir, child_matches in candidate_matches.items():
-            # Compare this candidate directory with the analyzed directory
-            comparison = await self._compare_directory_with_candidate(
-                dir_path, context, all_items, candidate_dir, child_matches, deferred_items
+            candidate_full_path: Path = self._archive_path / candidate_dir
+
+            # Track metadata matches using reducer
+            reducer = MetadataMatchReducer(self._comparison_rule)
+
+            # Track the first comparison rule we encounter to validate consistency
+            comparison_rule: DuplicateMatchRule | None = None
+
+            for base_name, matching_comparison in child_matches.items():
+                # Validate that all children use the same comparison rule
+                if matching_comparison.rule is not None:
+                    if comparison_rule is not None and matching_comparison.rule != comparison_rule:
+                        raise ValueError(
+                            f"Inconsistent comparison rules within directory {context.relative_path}: "
+                            f"expected {self._comparison_rule} but found {matching_comparison.rule} for child {base_name}"
+                        )
+                    comparison_rule = matching_comparison.rule
+
+                # Aggregate metadata matches from child
+                reducer.aggregate_from_match(matching_comparison)
+
+            # Aggregate deferred item results for this candidate directory
+            reducer.aggregate_from_match(deferred_results[candidate_dir])
+
+            # Get items in candidate directory for comparison
+            candidate_items: set[str] = set(i.name for i in candidate_full_path.iterdir())
+
+            # Aggregate directory-level metadata with child metadata
+            reducer.aggregate_from_stat(context.stat, candidate_full_path.stat())
+
+            # Create the DuplicateMatch with identity determined by set comparison
+            # non_identical: True if the item sets differ (different structure)
+            # non_superset: True if analyzed items are not a subset of candidate items
+            comparison = reducer.create_duplicate_match(
+                candidate_dir,
+                non_identical=all_items != candidate_items,
+                non_superset=not all_items.issubset(candidate_items)
             )
 
             if comparison is not None:
@@ -1013,7 +1075,8 @@ class AnalyzeProcessor:
 
         # Return early if no matching directories were found
         if not metadata_comparisons:
-            return ImmediateResult(context.relative_path, [], total_size, total_items, duplicated_size, duplicated_items)
+            return ImmediateResult(context.relative_path, [], total_size, total_items, duplicated_size,
+                                   duplicated_items)
 
         # Create and write duplicate record
         record = DuplicateRecord(
@@ -1027,170 +1090,152 @@ class AnalyzeProcessor:
     def _compare_deferred_item(
             self,
             analyzed_item_path: Path,
-            candidate_item_path: Path,
-            analyzed_stat: os.stat_result,
-            candidate_stat: os.stat_result,
-    ) -> DuplicateMatch | None:
-        """Compare a single deferred item (symlink, device, pipe, socket, or subdirectory).
+            candidate_item_paths: list[Path],
+    ) -> tuple[int, list[DuplicateMatch | None]]:
+        """Compare a single deferred item against multiple candidates.
+
+        Compares a deferred item (symlink, device, pipe, socket, or subdirectory) against
+        a list of candidate paths in a single pass. For subdirectories, recursion happens
+        only once with all candidate subitems aggregated.
 
         Args:
             analyzed_item_path: Absolute path to the analyzed item
-            candidate_item_path: Absolute path to the candidate item
-            analyzed_stat: stat result for the analyzed item (from lstat)
-            candidate_stat: stat result for the candidate item (from lstat)
+            candidate_item_paths: List of absolute paths to candidate items in the archive
 
         Returns:
-            DuplicateMatch with overall statistics for the entire subtree if items match, None otherwise.
-            For single items (symlinks, devices, pipes, sockets), returns match with duplicated_items=1.
-            For subdirectories, returns aggregated statistics from recursive comparison.
+            A tuple of (matched_count, results) where:
+            - matched_count: Number of items in the analyzed tree that matched any candidate.
+                            For single items (symlinks, devices, pipes, sockets): 1 if any candidate matched, 0 otherwise.
+                            For directories: sum of matched_count from all subitems, plus 1 if any candidate matched
+                            this directory itself.
+            - results: List of DuplicateMatch | None in the same order as candidate_item_paths.
+                      Each element is a DuplicateMatch if the candidate matches, None otherwise.
+                      For single items, match has duplicated_items=1.
+                      For subdirectories, match has aggregated statistics from recursive comparison.
+                      Returns None for candidates that don't exist or have mismatched types.
         """
-        # Check if both have the same file type
-        if stat.S_IFMT(analyzed_stat.st_mode) != stat.S_IFMT(candidate_stat.st_mode):
-            return None
+        # Get file stats for analyzed item (don't follow symlinks)
+        analyzed_stat: os.stat_result = analyzed_item_path.lstat()
+        analyzed_mode = stat.S_IFMT(analyzed_stat.st_mode)
 
-        # Use reducer to compare metadata for special files (symlinks, devices, pipes, sockets)
-        reducer = MetadataMatchReducer(self._comparison_rule)
-        reducer.aggregate_from_stat(analyzed_stat, candidate_stat)
+        # Track valid candidates as list parallel to candidate_item_paths
+        # Each entry is (candidate_path, candidate_stat, reducer) or None if invalidated
+        candidate_states: list[tuple[Path, os.stat_result, MetadataMatchReducer] | None] = []
+
+        # First pass: stat each candidate and filter by type match
+        for candidate_path in candidate_item_paths:
+            try:
+                candidate_stat: os.stat_result = candidate_path.lstat()
+            except FileNotFoundError:
+                candidate_states.append(None)
+                continue
+
+            # Check if both have the same file type
+            if stat.S_IFMT(candidate_stat.st_mode) != analyzed_mode:
+                candidate_states.append(None)
+                continue
+
+            # Create reducer and aggregate initial stat comparison
+            reducer = MetadataMatchReducer(self._comparison_rule)
+            reducer.aggregate_from_stat(analyzed_stat, candidate_stat)
+            candidate_states.append((candidate_path, candidate_stat, reducer))
+
+        # Check if any valid candidates remain
+        if all(entry is None for entry in candidate_states):
+            return 0, [None] * len(candidate_item_paths)
+
+        # Track total matched items across all subitems
+        total_matched: int = 0
+
+        # Per-candidate identity/superset flags (populated for directories, False for other types)
+        non_identical_flags: list[bool] = [False] * len(candidate_states)
+        non_superset_flags: list[bool] = [False] * len(candidate_states)
 
         # Compare based on file type
         if stat.S_ISLNK(analyzed_stat.st_mode):
             # Symlinks: compare targets
-            if analyzed_item_path.readlink() != candidate_item_path.readlink():
-                return None
+            analyzed_target = analyzed_item_path.readlink()
+            for idx, entry in enumerate(candidate_states):
+                if entry is None:
+                    continue
+                candidate_path, _, _ = entry
+                if analyzed_target != candidate_path.readlink():
+                    candidate_states[idx] = None
 
         elif stat.S_ISBLK(analyzed_stat.st_mode) or stat.S_ISCHR(analyzed_stat.st_mode):
             # Device files: compare major/minor numbers
-            if (os.major(analyzed_stat.st_rdev) != os.major(candidate_stat.st_rdev) or
-                    os.minor(analyzed_stat.st_rdev) != os.minor(candidate_stat.st_rdev)):
-                return None
+            analyzed_major = os.major(analyzed_stat.st_rdev)
+            analyzed_minor = os.minor(analyzed_stat.st_rdev)
+            for idx, entry in enumerate(candidate_states):
+                if entry is None:
+                    continue
+                _, candidate_stat, _ = entry
+                if (os.major(candidate_stat.st_rdev) != analyzed_major or
+                        os.minor(candidate_stat.st_rdev) != analyzed_minor):
+                    candidate_states[idx] = None
 
         elif stat.S_ISFIFO(analyzed_stat.st_mode) or stat.S_ISSOCK(analyzed_stat.st_mode):
             # Pipes/sockets: existence check is sufficient
             pass
 
         elif stat.S_ISDIR(analyzed_stat.st_mode):
-            # Check all items in the analyzed directory
+            # For directories, recursively compare all subitems
+            # Aggregate all subitems across all valid candidates for a single recursive call
+
+            # Track analyzed children names
+            analyzed_children: set[str] = set()
+
             for analyzed_subitem in analyzed_item_path.iterdir():
-                candidate_subitem = candidate_item_path / analyzed_subitem.name
-                analyzed_subitem_stat = analyzed_subitem.lstat()
-                try:
-                    candidate_subitem_stat = candidate_subitem.lstat()
-                except FileNotFoundError:
-                    continue
+                subitem_name = analyzed_subitem.name
+                analyzed_children.add(subitem_name)
 
-                # Use common helper for all other file types (symlinks, devices, pipes, sockets) and aggregate metadata
-                # matches
-                reducer.aggregate_from_match(self._compare_deferred_item(
-                    analyzed_subitem, candidate_subitem, analyzed_subitem_stat, candidate_subitem_stat
-                ))
+                valid_candidate_states = [entry for entry in candidate_states if entry is not None]
+                # Build list of candidate subitem paths (use empty Path for invalidated)
+                candidate_subitem_paths: list[Path] = [
+                    candidate_path / subitem_name for candidate_path, _, _ in valid_candidate_states
+                ]
+
+                # Single recursive call for all candidates
+                subitem_matched, subitem_results = self._compare_deferred_item(
+                    analyzed_subitem, candidate_subitem_paths)
+                total_matched += subitem_matched
+
+                # Aggregate results back to each candidate's reducer
+                for idx, (_, _, reducer) in enumerate(valid_candidate_states):
+                    reducer.aggregate_from_match(subitem_results[idx])
+
+            # Compute per-candidate identity/superset flags using set operations
+            # non_identical_flags[idx]: True if children sets differ
+            # non_superset_flags[idx]: True if any analyzed child is missing from candidate
+            for idx, entry in enumerate(candidate_states):
+                if entry is not None:
+                    candidate_children = set(child.name for child in entry[0].iterdir())
+                    non_identical_flags[idx] = analyzed_children != candidate_children
+                    non_superset_flags[idx] = not analyzed_children.issubset(candidate_children)
+
         else:
-            # Unknown file type
-            return None
+            # Unknown file type - invalidate all candidates
+            candidate_states = [None] * len(candidate_item_paths)
 
-        # For special files, is_superset equals is_identical (file itself is the only item)
-        return reducer.create_duplicate_match(
-            candidate_item_path.relative_to(self._archive_path),
-            non_identical=False,
-            non_superset=False,
-        )
-
-    async def _compare_directory_with_candidate(
-            self,
-            dir_path: Path,
-            context: FileContext,
-            all_items: set[str],
-            candidate_dir: Path,
-            child_matches: dict[str, DuplicateMatch],
-            deferred_items: set[str]
-    ) -> DuplicateMatch | None:
-        """Compare a directory with a candidate archive directory.
-
-        Args:
-            dir_path: Path to the directory being analyzed (can be used directly from working directory)
-            context: File context for the directory being analyzed
-            all_items: Set of all item names (base names) in the analyzed directory
-            candidate_dir: Relative path to the candidate archive directory
-            child_matches: Map of base_name -> DuplicateMatch for files in candidate directory
-            deferred_items: Set of base names for deferred items
-
-        Returns:
-            DuplicateMatch if the candidate matches, None otherwise.
-            For directories, ?_match fields are false if any child file has false value.
-        """
-        logger.info(
-            "Comparing directory %s with candidate %s (%d files, %d deferred)",
-            context.relative_path, candidate_dir, len(child_matches), len(deferred_items)
-        )
-
-        if logger.isEnabledFor(logging.DEBUG):
-            if child_matches:
-                sorted_child_names = sorted(child_matches.keys())
-                logger.debug("Child files for %s vs %s: %s", context.relative_path, candidate_dir,
-                             ', '.join(sorted_child_names))
-            if deferred_items:
-                sorted_deferred_names = sorted(deferred_items)
-                logger.debug("Deferred items for %s vs %s: %s", context.relative_path, candidate_dir,
-                             ', '.join(sorted_deferred_names))
-
-        candidate_full_path: Path = self._archive_path / candidate_dir
-
-        # Track metadata matches using reducer
-        reducer = MetadataMatchReducer(self._comparison_rule)
-
-        # Track the first comparison rule we encounter to validate consistency
-        comparison_rule: DuplicateMatchRule | None = None
-
-        for base_name, matching_comparison in child_matches.items():
-            # Validate that all children use the same comparison rule
-            if matching_comparison.rule is not None:
-                if comparison_rule is not None and matching_comparison.rule != comparison_rule:
-                    raise ValueError(
-                        f"Inconsistent comparison rules within directory {context.relative_path}: "
-                        f"expected {self._comparison_rule} but found {matching_comparison.rule} for child {base_name}"
-                    )
-                comparison_rule = matching_comparison.rule
-
-            # Aggregate metadata matches from child
-            reducer.aggregate_from_match(matching_comparison)
-
-        # Process all deferred items
-        # Collect all results before determining if this is a valid match
-        for base_name in deferred_items:
-            # Construct paths for both analyzed and candidate items
-            analyzed_item_path: Path = dir_path / base_name
-            candidate_item_path: Path = candidate_full_path / base_name
-
-            # Get file stats (don't follow symlinks)
-            analyzed_stat: os.stat_result = analyzed_item_path.lstat()
-            try:
-                candidate_stat: os.stat_result = candidate_item_path.lstat()
-            except FileNotFoundError:
+        # Build final results by zipping candidates with flags
+        results: list[DuplicateMatch | None] = []
+        for entry, non_identical, non_superset in zip(candidate_states, non_identical_flags, non_superset_flags):
+            if entry is None:
+                results.append(None)
                 continue
 
-            # Use common helper to compare the deferred item
-            matching_comparison = self._compare_deferred_item(
-                analyzed_item_path, candidate_item_path, analyzed_stat, candidate_stat
-            )
-            if matching_comparison is None:
-                continue
+            candidate_path, _, reducer = entry
+            results.append(reducer.create_duplicate_match(
+                candidate_path.relative_to(self._archive_path),
+                non_identical=non_identical,
+                non_superset=non_superset,
+            ))
 
-            # Aggregate metadata matches from deferred item
-            reducer.aggregate_from_match(matching_comparison)
+        # Count this item as matched if any candidate matched (directories don't count)
+        if not stat.S_ISDIR(analyzed_stat.st_mode) and any(result is not None for result in results):
+            total_matched += 1
 
-        # Get items in candidate directory for comparison
-        candidate_items: set[str] = set((i.name for i in candidate_full_path.iterdir()))
-
-        # Aggregate directory-level metadata with child metadata
-        reducer.aggregate_from_stat(context.stat, candidate_full_path.stat())
-
-        # Create the DuplicateMatch with identity determined by set comparison
-        # non_identical: True if the item sets differ (different structure)
-        # non_superset: True if analyzed items are not a subset of candidate items
-        return reducer.create_duplicate_match(
-            candidate_dir,
-            non_identical=all_items != candidate_items,
-            non_superset=(not all_items.issubset(candidate_items))
-        )
+        return total_matched, results
 
     async def _analyze_file(self, file_path: Path, context: FileContext) -> ImmediateResult:
         """Analyze a single file and write duplicate record to database if duplicates found.
@@ -1220,9 +1265,6 @@ class AnalyzeProcessor:
             # No duplicates found, return immediate result with empty list
             return ImmediateResult(context.relative_path, [], context.stat.st_size, 1, 0, 0)
 
-        # Get metadata for the analyzed file
-        file_size: int = context.stat.st_size
-
         # Compare metadata with each duplicate
         metadata_comparisons: list[DuplicateMatch] = []
         for dup_path in duplicates_found:
@@ -1250,7 +1292,7 @@ class AnalyzeProcessor:
                 dup_path,
                 mtime_match=mtime_match, atime_match=atime_match, ctime_match=ctime_match, mode_match=mode_match,
                 owner_match=owner_match, group_match=group_match,
-                duplicated_size=file_size, duplicated_items=1,
+                duplicated_size=context.stat.st_size, duplicated_items=1,
                 is_identical=is_identical, is_superset=is_superset,
                 rule=self._comparison_rule
             ))
@@ -1262,7 +1304,8 @@ class AnalyzeProcessor:
         # duplicated_items: 1 (the file itself, since it has duplicates)
 
         # Create and write duplicate record
-        record = DuplicateRecord(context.relative_path, metadata_comparisons, file_size, 1, file_size, 1)
+        record = DuplicateRecord(
+            context.relative_path, metadata_comparisons, context.stat.st_size, 1, context.stat.st_size, 1)
         self._writer.write_duplicate_record(record)
 
         logger.info("Completed analyzing file: %s", context.relative_path)
@@ -1581,7 +1624,8 @@ class DescribeFormatter(ABC):
         if comparison.duplicated_items > 0:
             print(f"    Duplicated items: {comparison.duplicated_items}")
         if comparison.duplicated_size > 0:
-            size_str = str(comparison.duplicated_size) if self.options.use_bytes else format_size(comparison.duplicated_size)
+            size_str = str(comparison.duplicated_size) if self.options.use_bytes else format_size(
+                comparison.duplicated_size)
             print(f"    Duplicated size: {size_str}")
 
     def _sort_duplicates(self, duplicates: list[DuplicateMatch]) -> list[DuplicateMatch]:
@@ -1598,6 +1642,7 @@ class DescribeFormatter(ABC):
         Returns:
             Sorted list of duplicates
         """
+
         def sort_key(dup: DuplicateMatch) -> tuple[Any, ...]:
             # Identity status rank: identical=2, superset=1, partial=0
             identity_rank = 2 if dup.is_identical else (1 if dup.is_superset else 0)
@@ -1717,7 +1762,7 @@ class DirectoryDescribeFormatter(DescribeFormatter):
         #          type_str, total_size_str, dup_size_str, dups_str, max_match_dup_size_str, best_status_str,
         #          total_items_str, dup_items_str, size_ratio_str, items_ratio_str, max_ratio_str, in_report_str)
         rows_data: list[tuple[str, bool, int, int, int, int, int, int, int, float, float, float, bool,
-                              str, str, str, str, str, str, str, str, str, str, str, str]] = []
+        str, str, str, str, str, str, str, str, str, str, str, str]] = []
         for child_path in children:
             child_name = child_path.name
             is_dir = child_path.is_dir()
@@ -1737,16 +1782,19 @@ class DirectoryDescribeFormatter(DescribeFormatter):
                 max_match_dup_size_str = "0" if self.options.use_bytes else "0 B"
                 best_status_str = "-"
                 rows_data.append((child_name, is_dir, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, False,
-                                type_str, total_size_str, dup_size_str, "0", max_match_dup_size_str, best_status_str,
-                                "-", "-", "-", "-", "-", "No"))
+                                  type_str, total_size_str, dup_size_str, "0", max_match_dup_size_str, best_status_str,
+                                  "-", "-", "-", "-", "-", "No"))
             elif child_record.duplicates:
-                total_size_str = str(child_record.total_size) if self.options.use_bytes else format_size(child_record.total_size)
-                dup_size_str = str(child_record.duplicated_size) if self.options.use_bytes else format_size(child_record.duplicated_size)
+                total_size_str = str(child_record.total_size) if self.options.use_bytes else format_size(
+                    child_record.total_size)
+                dup_size_str = str(child_record.duplicated_size) if self.options.use_bytes else format_size(
+                    child_record.duplicated_size)
 
                 # Find the duplicate with highest duplicated_size and use its status
                 max_match_dup = max(child_record.duplicates, key=lambda dup: dup.duplicated_size)
                 max_match_dup_size = max_match_dup.duplicated_size
-                max_match_dup_size_str = str(max_match_dup_size) if self.options.use_bytes else format_size(max_match_dup_size)
+                max_match_dup_size_str = str(max_match_dup_size) if self.options.use_bytes else format_size(
+                    max_match_dup_size)
 
                 # Get status from the max match duplicate
                 if max_match_dup.is_identical:
@@ -1796,7 +1844,8 @@ class DirectoryDescribeFormatter(DescribeFormatter):
                     "Yes"
                 ))
             else:
-                total_size_str = str(child_record.total_size) if self.options.use_bytes else format_size(child_record.total_size)
+                total_size_str = str(child_record.total_size) if self.options.use_bytes else format_size(
+                    child_record.total_size)
                 dup_size_str = "0" if self.options.use_bytes else "0 B"
                 max_match_dup_size_str = "0" if self.options.use_bytes else "0 B"
                 best_status_str = "-"
@@ -1830,7 +1879,7 @@ class DirectoryDescribeFormatter(DescribeFormatter):
 
         # Sort rows according to options
         def sort_key(row: tuple[str, bool, int, int, int, int, int, int, int, float, float, float, bool,
-                                str, str, str, str, str, str, str, str, str, str, str, str]) -> tuple[Any, ...]:
+        str, str, str, str, str, str, str, str, str, str, str, str]) -> tuple[Any, ...]:
             name, child_is_dir, total_size, dup_size, dups, match_dup_size, status_rank, total_items_val, dup_items_val, size_ratio_val, items_ratio_val, max_ratio_val, in_report, *_ = row
 
             if self.options.sort_children == 'dup-size':
@@ -1855,7 +1904,8 @@ class DirectoryDescribeFormatter(DescribeFormatter):
         # Order: name, type, total_size, dup_size, size_ratio, total_items, dup_items, items_ratio,
         #        dups, max_match_dup_size, max_ratio, status, in_report
         rows: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str, str]] = [
-            (row[0], row[13], row[14], row[15], row[21], row[19], row[20], row[22], row[16], row[17], row[23], row[18], row[24]) for row in rows_data
+            (row[0], row[13], row[14], row[15], row[21], row[19], row[20], row[22], row[16], row[17], row[23], row[18],
+             row[24]) for row in rows_data
         ]
 
         # Calculate column widths
