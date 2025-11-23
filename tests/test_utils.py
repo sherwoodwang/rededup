@@ -2,8 +2,6 @@
 import os
 from pathlib import Path
 
-from arindexer import Output
-
 
 async def compute_xor(path: Path):
     """Compute XOR-based hash for testing hash collisions."""
@@ -22,17 +20,6 @@ async def compute_xor(path: Path):
     value = int.to_bytes(value, length=4)
 
     return value
-
-
-class CollectingOutput(Output):
-    """Test output collector that captures records in a list."""
-
-    def __init__(self):
-        super().__init__()
-        self.data: list[list[str]] = []
-
-    def _offer(self, record):
-        self.data.append(record)
 
 
 def copy_times(src: Path, dest: Path):

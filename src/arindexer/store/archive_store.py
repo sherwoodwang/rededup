@@ -58,9 +58,9 @@ class ArchiveStore:
     or business logic - it simply provides the foundational data operations that
     higher-level components can compose into more complex behaviors.
 
-    Contrast with Archive class, which provides high-level operations like rebuild(),
-    refresh(), and find_duplicates() that orchestrate multiple ArchiveStore operations
-    into complete workflows with proper error handling and concurrency management.
+    Contrast with Archive class, which provides high-level operations like rebuild()
+    and refresh() that orchestrate multiple ArchiveStore operations into complete
+    workflows with proper error handling and concurrency management.
 
     Content Equivalent Classes (EC Classes):
 

@@ -6,8 +6,7 @@ import textwrap
 from functools import wraps
 from pathlib import Path
 
-from . import Archive, Processor, FileMetadataDifferencePattern, FileMetadataDifferenceType, StandardOutput, \
-    ArchiveIndexNotFound
+from . import Archive, Processor, ArchiveIndexNotFound
 from .utils.profiling import profile_main
 
 
@@ -47,8 +46,7 @@ def archive_indexer():
         epilog=textwrap.dedent('''
             Examples:
               arindexer rebuild
-              arindexer find-duplicates /path/to/check
-              arindexer --archive /backup/archive find-duplicates --ignore mtime ~/documents
+              arindexer analyze /path/to/check
             ''').strip()
     )
     parser.add_argument(
@@ -111,32 +109,6 @@ def archive_indexer():
         metavar='SOURCE',
         help='Path to the source archive directory to import from')
     parser_import.set_defaults(method=_import_index, create=False)
-
-    parser_find_duplicates = subparsers.add_parser(
-        'find-duplicates',
-        help='Find duplicate files against the archive',
-        description='Searches for files in the specified paths that are duplicates of files in the archive index.',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent('''
-            Examples:
-              arindexer find-duplicates /home/user/documents
-              arindexer find-duplicates --ignore size,mtime /path/to/check
-              arindexer find-duplicates --show-possible-duplicates /media/usb
-            ''').strip())
-    parser_find_duplicates.add_argument(
-        '--ignore',
-        metavar='TYPES',
-        help='Comma-separated list of metadata difference types to ignore when comparing files (e.g., "size,mtime")')
-    parser_find_duplicates.add_argument(
-        '--show-possible-duplicates',
-        action='store_true',
-        help='Show content-wise duplicates that might be actual duplicates')
-    parser_find_duplicates.add_argument(
-        'file_or_directory',
-        nargs='*',
-        metavar='PATH',
-        help='Files or directories to check for duplicates against the archive')
-    parser_find_duplicates.set_defaults(method=_find_duplicates, create=False)
 
     parser_analyze = subparsers.add_parser(
         'analyze',
@@ -265,10 +237,6 @@ def archive_indexer():
     if archive_path is None:
         archive_path = os.environ.get('ARINDEXER_ARCHIVE')
 
-    output = StandardOutput()
-    if args.verbose:
-        output.verbosity = 1
-
     def load_archive(processor):
         if archive_path is None:
             working_directory = os.getcwd()
@@ -276,12 +244,12 @@ def archive_indexer():
             attempt = Path(working_directory)
             while True:
                 try:
-                    archive = Archive(processor, attempt, output=output)
+                    archive = Archive(processor, attempt)
                     break
                 except ArchiveIndexNotFound as e:
                     if attempt == attempt.parent:
                         if args.create:
-                            archive = Archive(processor, working_directory, create=True, output=output)
+                            archive = Archive(processor, working_directory, create=True)
                             break
                         else:
                             if first_exception is not None:
@@ -293,7 +261,7 @@ def archive_indexer():
                     if first_exception is None:
                         first_exception = e
         else:
-            archive = Archive(processor, archive_path, output=output)
+            archive = Archive(processor, archive_path)
 
         if not (hasattr(args, 'log_file') and args.log_file):
             archive.configure_logging_from_settings()
@@ -302,45 +270,21 @@ def archive_indexer():
     # Call the method with load_archive function
     # The @needs_archive decorator will create Processor and load the archive
     # The @no_archive decorator will skip both Processor and archive loading
-    args.method(load_archive, output, args)
+    args.method(load_archive, None, args)
 
 
 @needs_archive
-def _rebuild(archive: Archive, output: StandardOutput, args):
+def _rebuild(archive: Archive, output, args):
     archive.rebuild()
 
 
 @needs_archive
-def _refresh(archive: Archive, output: StandardOutput, args):
+def _refresh(archive: Archive, output, args):
     archive.refresh()
 
 
 @needs_archive
-def _find_duplicates(archive: Archive, output: StandardOutput, args):
-    diffptn = FileMetadataDifferencePattern()
-    if args.ignore:
-        for kind in args.ignore.split(','):
-            kind = kind.strip()
-            if not kind:
-                continue
-
-            diffptn.add(FileMetadataDifferenceType(kind))
-    else:
-        diffptn.add_trivial_attributes()
-
-    saved_showing_content_wise_duplicates = output.showing_content_wise_duplicates
-    try:
-        if args.show_possible_duplicates:
-            output.showing_content_wise_duplicates = True
-
-        for file_or_directory in args.file_or_directory:
-            archive.find_duplicates(Path(file_or_directory), ignore=diffptn)
-    finally:
-        output.showing_content_wise_duplicates = saved_showing_content_wise_duplicates
-
-
-@needs_archive
-def _analyze(archive: Archive, output: StandardOutput, args):
+def _analyze(archive: Archive, output, args):
     from .commands.analyzer import DuplicateMatchRule
 
     paths = [Path(p) for p in args.paths]
@@ -359,7 +303,7 @@ def _analyze(archive: Archive, output: StandardOutput, args):
 
 
 @no_archive
-def _describe(output: StandardOutput, args):
+def _describe(output, args):
     from .commands.analyzer import do_describe, DescribeOptions
 
     # Handle default path (current working directory if no paths provided)
@@ -405,13 +349,13 @@ def _describe(output: StandardOutput, args):
 
 
 @needs_archive
-def _inspect(archive: Archive, output: StandardOutput, args):
+def _inspect(archive: Archive, output, args):
     for record in archive.inspect():
         print(record)
 
 
 @needs_archive
-def _import_index(archive: Archive, output: StandardOutput, args):
+def _import_index(archive: Archive, output, args):
     archive.import_index(args.source_archive)
 
 

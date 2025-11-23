@@ -14,7 +14,6 @@ Test Files and Coverage:
 | test_find_report.py        | FindReportTest               | find_report_for_path()         | Exact path, children, nesting      |
 | test_describe.py           | DescribeIntegrationTest      | describe command               | File/dir reporting, integration     |
 |                            | PrintFormattedTableTest      | DescribeFormatter._print_formatted_table() | Table formatting, alignment |
-| test_duplicate_finder.py   | DuplicateFinderTest          | find-duplicates command        | CLI command, filtering              |
 | test_describe_options.py   | DescribeOptionsTest          | describe command options       | Flags, limit, sorting              |
 | test_archive_importer.py   | ImportTest                   | Archive.import_from()          | Import from nested archives         |
 """

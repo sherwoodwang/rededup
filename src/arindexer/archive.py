@@ -7,13 +7,6 @@ from typing import Iterator, Callable, Awaitable
 from .utils.processor import Processor
 from .store.archive_store import ArchiveStore
 from .store.archive_settings import ArchiveSettings
-from .commands.duplicate_finder import (
-    do_find_duplicates,
-    FindDuplicatesArgs,
-    FileMetadataDifferencePattern,
-    Output,
-    StandardOutput
-)
 from .commands.rebuild_refresh import do_rebuild, do_refresh, RebuildRefreshArgs
 from .commands.archive_importer import do_import, ImportArgs
 from .commands.analyzer import do_analyze, AnalyzeArgs
@@ -26,7 +19,6 @@ class Archive:
     complete workflows for common archive management tasks:
     - rebuild(): Full index reconstruction from scratch
     - refresh(): Incremental updates based on file system changes
-    - find_duplicates(): Content-aware duplicate detection with metadata comparison
 
     Archive operates at the workflow level, coordinating multiple ArchiveStore operations,
     managing concurrency with async/await patterns, handling error cases, and implementing
@@ -37,15 +29,13 @@ class Archive:
     into meaningful, user-facing operations with proper sequencing and error handling.
     """
 
-    def __init__(self, processor: Processor, path: str | os.PathLike, create: bool = False,
-                 output: Output | None = None):
+    def __init__(self, processor: Processor, path: str | os.PathLike, create: bool = False):
         """Initialize archive with LevelDB index at path/.aridx/database.
 
         Args:
             processor: File processing backend for hashing and comparison
             path: Archive root directory path
             create: Create .aridx directory if missing
-            output: Output handler for duplicate reporting
 
         Raises:
             FileNotFoundError: Archive directory does not exist
@@ -54,14 +44,10 @@ class Archive:
         """
         archive_path = Path(path)
 
-        if output is None:
-            output = StandardOutput()
-
         settings = ArchiveSettings(archive_path)
 
         self._store = ArchiveStore(settings, archive_path, create)
         self._processor = processor
-        self._output = output
         self._settings = settings
 
         self._hash_algorithms = {
@@ -161,30 +147,6 @@ class Archive:
         asyncio.run(do_import(
             self._store,
             ImportArgs(Path(source_archive_path), self._processor)
-        ))
-
-    def find_duplicates(self, input: Path, ignore: FileMetadataDifferencePattern | None = None):
-        """Find files in input path that duplicate content in the archive.
-
-        Args:
-            input: Directory or file path to check for duplicates
-            ignore: Metadata differences to ignore when matching (default: none)
-
-        Outputs duplicate reports through configured Output handler.
-        Groups files by content hash and compares within equivalent classes.
-        """
-        if ignore is None:
-            ignore = FileMetadataDifferencePattern()
-
-        asyncio.run(do_find_duplicates(
-            self._store,
-            FindDuplicatesArgs(
-                self._processor,
-                self._output,
-                self._get_hash_algorithm(),
-                input,
-                ignore
-            )
         ))
 
     def analyze(self, input_paths: list[Path], comparison_rule: 'DuplicateMatchRule | None' = None):
