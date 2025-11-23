@@ -1536,6 +1536,11 @@ class DescribeFormatter(ABC):
             print(f"No duplicates found for: {self.relative_path}")
             return
 
+        # Print definitions if details are requested
+        if self.options.show_details:
+            self._print_attribute_definitions()
+            print()
+
         # Print unified header
         self._print_header(record)
 
@@ -1544,6 +1549,55 @@ class DescribeFormatter(ABC):
 
         # Print additional details (only for directories)
         self._print_details(record)
+
+    def _print_attribute_definitions(self) -> None:
+        """Print definitions of attributes and columns.
+
+        This is shown when --details flag is enabled.
+        """
+        print("Attribute Definitions:")
+        print()
+        print("Summary Counts (in report header):")
+        print("  Size: Total size and breakdown")
+        print("    - duplicated: Each item counted once if it has ANY duplicate in archive")
+        print("    - unique: Content with no duplicates in archive")
+        print("  Items: Total item count and breakdown (files + special items, not directories)")
+        print("    - duplicated: Each item counted once if it has ANY duplicate in archive")
+        print("    - unique: Items with no duplicates in archive")
+        print()
+        print("Duplicate Match Details (per archive location):")
+        print("  Status: Match type for this archive location")
+        print("    - Identical: All content present with matching metadata")
+        print("    - Superset: All analyzed content present (archive may have extras)")
+        print("    - Partial: Some analyzed content missing in this location")
+        print("  Matching: Which metadata fields match (mtime, atime, ctime, mode, owner, group)")
+        print("  Duplicated items/size: Content in this archive location that matches")
+        print()
+        print("Hierarchical Matching Requirement (for directory duplicates):")
+        print("  Files at the SAME relative paths within the directory are counted")
+        print("  - Example: Analyzed [a.txt, b.txt] vs. archive 'dir1/' [a.txt, c.txt]")
+        print("    - Header totals: a.txt and b.txt both show as duplicated")
+        print("    - 'dir1/' entry: Only a.txt counted (b.txt not at same path in dir1/)")
+        print()
+        print("Report Inclusion:")
+        print("  Included: Item has at least one duplicate in the archive")
+        print("  Excluded: Item has NO duplicates (In Report column shows 'No')")
+        print()
+        print("Directory Listing Columns:")
+        print("  Name: File or directory name")
+        print("  Type: File or Dir (directory)")
+        print("  Total Size: All content size")
+        print("  Dup Size: Global duplicated size (each item once)")
+        print("  Size %: Percentage duplicated (Dup Size / Total Size)")
+        print("  Total Items: All items count")
+        print("  Dup Items: Global duplicated items (each item once)")
+        print("  Items %: Percentage duplicated (Dup Items / Total Items)")
+        print("  Dups: Number of duplicate matches found")
+        print("  Max Match: Largest per-location duplicated size")
+        print("  Max %: Largest match percentage (Max Match / Total Size)")
+        print("  Status: Best match status (Identical/Superset/Partial)")
+        print("  In Report: Yes if included in analysis report, No otherwise")
+        print()
 
     def _print_header(self, record: DuplicateRecord) -> None:
         """Print header information for the item.
@@ -1734,6 +1788,31 @@ class DirectoryDescribeFormatter(DescribeFormatter):
         """Get the item type string."""
         return "Directory"
 
+    def _format_percentage(self, numerator: int | float, denominator: int | float) -> str:
+        """Format percentage with ~ prefix if result is due to rounding.
+
+        Args:
+            numerator: The numerator value
+            denominator: The denominator value
+
+        Returns:
+            Formatted percentage string with ~ prefix if rounded, otherwise exact percentage
+        """
+        if denominator == 0:
+            return "0.0%"
+
+        ratio = numerator / denominator
+        percent_str = f"{ratio:.1%}"
+
+        # Check if 100.0% is due to rounding (numerator != denominator)
+        if percent_str == "100.0%" and numerator != denominator:
+            return "~100.0%"
+        # Check if 0.0% is due to rounding (numerator != 0)
+        elif percent_str == "0.0%" and numerator != 0:
+            return "~0.0%"
+
+        return percent_str
+
     def _print_details(self, record: DuplicateRecord) -> None:
         """Print child files information using filesystem listing first."""
         print()
@@ -1812,9 +1891,9 @@ class DirectoryDescribeFormatter(DescribeFormatter):
                 items_ratio = child_record.duplicated_items / child_record.total_items if child_record.total_items > 0 else 0.0
                 max_ratio = max_match_dup_size / child_record.total_size if child_record.total_size > 0 else 0.0
 
-                size_ratio_str = f"{size_ratio:.1%}"
-                items_ratio_str = f"{items_ratio:.1%}"
-                max_ratio_str = f"{max_ratio:.1%}"
+                size_ratio_str = self._format_percentage(child_record.duplicated_size, child_record.total_size)
+                items_ratio_str = self._format_percentage(child_record.duplicated_items, child_record.total_items)
+                max_ratio_str = self._format_percentage(max_match_dup_size, child_record.total_size)
 
                 rows_data.append((
                     child_name,

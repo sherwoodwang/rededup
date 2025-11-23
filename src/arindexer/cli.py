@@ -354,6 +354,8 @@ def _describe(output: StandardOutput, args):
         limit = None  # No limit
     elif args.limit is not None:
         limit = args.limit
+    elif args.details:
+        limit = None  # Show all when --details is on (unless --limit is specified)
     else:
         limit = 1  # Default: show only most relevant
 
