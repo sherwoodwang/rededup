@@ -11,7 +11,7 @@ from arindexer.commands.analyzer import (
     DescribeFormatter,
     SortableRowData,
     get_report_directory_path,
-    ReportReader
+    ReportStore
 )
 from arindexer.utils.processor import Processor
 
@@ -58,11 +58,11 @@ class DescribeIntegrationTest(unittest.TestCase):
                     archive.rebuild()
                     archive.analyze([target_path])
 
-            # Use ReportReader to verify the report
+            # Use ReportStore to verify the report
             report_dir = get_report_directory_path(target_path)
-            with ReportReader(report_dir, Path('.')) as reader:
+            with ReportStore(report_dir, Path('.')) as store:
                 # Read the record for the duplicate file
-                record = reader.read_duplicate_record(Path('target') / 'duplicate.txt')
+                record = store.read_duplicate_record(Path('target') / 'duplicate.txt')
 
                 self.assertIsNotNone(record)
                 self.assertEqual(1, len(record.duplicates))
@@ -96,23 +96,22 @@ class DescribeIntegrationTest(unittest.TestCase):
                     archive.rebuild()
                     archive.analyze([target_dir])
 
-            # Use ReportReader to verify directory report
+            # Use ReportStore to verify directory report
             report_dir = get_report_directory_path(target_dir)
-            with ReportReader(report_dir, Path('.')) as reader:
+            with ReportStore(report_dir, Path('.')) as store:
                 # Read directory record
-                dir_record = reader.read_duplicate_record(Path('duplicate_dir'))
+                dir_record = store.read_duplicate_record(Path('duplicate_dir'))
 
                 self.assertIsNotNone(dir_record)
                 self.assertEqual(1, len(dir_record.duplicates))
                 self.assertTrue(dir_record.duplicates[0].is_identical)
 
-                # Iterate to find child files
-                child_records = []
-                for record in reader.iterate_all_records():
-                    if record.path.parent == Path('duplicate_dir'):
-                        child_records.append(record)
+                # Read child file records directly
+                child1_record = store.read_duplicate_record(Path('duplicate_dir') / 'file1.txt')
+                child2_record = store.read_duplicate_record(Path('duplicate_dir') / 'file2.txt')
 
-                self.assertEqual(2, len(child_records))
+                self.assertIsNotNone(child1_record)
+                self.assertIsNotNone(child2_record)
 
 
 class PrintFormattedTableTest(unittest.TestCase):

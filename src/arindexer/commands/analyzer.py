@@ -620,27 +620,39 @@ class ReportManifest:
         return cls(**data)
 
 
-class ReportReader:
-    """Handles reading analysis reports from .report directories with LevelDB storage."""
+class ReportStore:
+    """Handles reading and writing analysis reports to .report directories with LevelDB storage."""
 
-    def __init__(self, report_dir: Path, analyzed_path: Path) -> None:
-        """Initialize report reader.
+    def __init__(self, report_dir: Path, analyzed_path: Path | None = None) -> None:
+        """Initialize report store.
 
         Args:
             report_dir: Path to .report directory where report is stored
-            analyzed_path: The path that was analyzed (the root of the analysis)
+            analyzed_path: The path that was analyzed (the root of the analysis).
+                          Required for reading operations, optional for write-only usage.
         """
         self.report_dir: Path = report_dir
         self.manifest_path: Path = report_dir / 'manifest.json'
         self.database_path: Path = report_dir / 'database'
-        self.analyzed_path: Path = analyzed_path
+        self.analyzed_path: Path | None = analyzed_path
         self._database: plyvel.DB | None = None
 
-    def open_database(self) -> None:
-        """Open the LevelDB database for reading duplicate records."""
-        if not self.database_path.exists():
+    def create_report_directory(self) -> None:
+        """Create the .report directory if it doesn't exist."""
+        self.report_dir.mkdir(exist_ok=True)
+
+    def open_database(self, *, create_if_missing: bool = False) -> None:
+        """Open the LevelDB database.
+
+        Args:
+            create_if_missing: If True, create the database if it doesn't exist.
+                              If False, raise FileNotFoundError if database doesn't exist.
+        """
+        if create_if_missing:
+            self.database_path.mkdir(parents=True, exist_ok=True)
+        elif not self.database_path.exists():
             raise FileNotFoundError(f"Database directory not found: {self.database_path}")
-        self._database = plyvel.DB(str(self.database_path), create_if_missing=False)
+        self._database = plyvel.DB(str(self.database_path), create_if_missing=create_if_missing)
 
     def close_database(self) -> None:
         """Close the LevelDB database."""
@@ -648,7 +660,7 @@ class ReportReader:
             self._database.close()
             self._database = None
 
-    def __enter__(self) -> 'ReportReader':
+    def __enter__(self) -> 'ReportStore':
         """Context manager entry."""
         self.open_database()
         return self
@@ -669,7 +681,7 @@ class ReportReader:
         if self._database is None:
             raise RuntimeError("Database not opened. Use context manager or call open_database().")
 
-        path_hash = ReportWriter._compute_path_hash(path)
+        path_hash = self._compute_path_hash(path)
         prefixed_db = self._database.prefixed_db(path_hash)
 
         # Iterate through all records with this hash prefix
@@ -679,78 +691,6 @@ class ReportReader:
                 return record
 
         return None
-
-    def iterate_all_records(self):
-        """Iterate through all duplicate records in the database.
-
-        Yields:
-            DuplicateRecord instances for all records in the database
-        """
-        if self._database is None:
-            raise RuntimeError("Database not opened. Use context manager or call open_database().")
-
-        for key, value in self._database.iterator():
-            # Skip keys that are just hash prefixes without varint sequence numbers
-            # Valid keys have format: <16-byte hash><varint sequence>
-            if len(key) > 16:
-                try:
-                    record = DuplicateRecord.from_msgpack(value)
-                    yield record
-                except Exception:
-                    # Skip invalid records
-                    continue
-
-    def read_manifest(self) -> ReportManifest:
-        """Read existing report manifest.
-
-        Returns:
-            The report manifest loaded from manifest.json
-
-        Raises:
-            FileNotFoundError: If manifest.json doesn't exist
-        """
-        with open(self.manifest_path, 'r') as f:
-            data = json.load(f)
-        return ReportManifest.from_dict(data)
-
-
-class ReportWriter:
-    """Handles writing analysis reports to .report directories with LevelDB storage."""
-
-    def __init__(self, report_dir: Path) -> None:
-        """Initialize report writer.
-
-        Args:
-            report_dir: Path to .report directory where report will be written
-        """
-        self.report_dir: Path = report_dir
-        self.manifest_path: Path = report_dir / 'manifest.json'
-        self.database_path: Path = report_dir / 'database'
-        self._database: plyvel.DB | None = None
-
-    def create_report_directory(self) -> None:
-        """Create the .report directory if it doesn't exist."""
-        self.report_dir.mkdir(exist_ok=True)
-
-    def open_database(self) -> None:
-        """Open the LevelDB database for storing duplicate records."""
-        self.database_path.mkdir(parents=True, exist_ok=True)
-        self._database = plyvel.DB(str(self.database_path), create_if_missing=True)
-
-    def close_database(self) -> None:
-        """Close the LevelDB database."""
-        if self._database is not None:
-            self._database.close()
-            self._database = None
-
-    def __enter__(self) -> 'ReportWriter':
-        """Context manager entry."""
-        self.open_database()
-        return self
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Context manager exit."""
-        self.close_database()
 
     def write_duplicate_record(self, record: DuplicateRecord) -> None:
         """Write a duplicate record to the database.
@@ -843,19 +783,19 @@ class ReportWriter:
 class AnalyzeProcessor:
     """Processor for analysis operations that encapsulates state and logic."""
 
-    def __init__(self, store: ArchiveStore, args: AnalyzeArgs, input_path: Path, writer: ReportWriter) -> None:
+    def __init__(self, store: ArchiveStore, args: AnalyzeArgs, input_path: Path, report_store: ReportStore) -> None:
         """Initialize the analyze processor.
 
         Args:
             store: Archive store for accessing indexed files
             args: Analysis arguments
             input_path: Path to analyze
-            writer: Report writer with open database connection
+            report_store: Report store with open database connection
         """
         self._store: ArchiveStore = store
         self._processor: Processor = args.processor
         self._input_path: Path = input_path
-        self._writer: ReportWriter = writer
+        self._report_store: ReportStore = report_store
         self._archive_path: Path = store.archive_path
         _, self._calculate_digest = args.hash_algorithm
         self._comparison_rule: DuplicateMatchRule = args.comparison_rule
@@ -1093,7 +1033,7 @@ class AnalyzeProcessor:
         # Create and write duplicate record
         record = DuplicateRecord(
             context.relative_path, metadata_comparisons, total_size, total_items, duplicated_size, duplicated_items)
-        self._writer.write_duplicate_record(record)
+        self._report_store.write_duplicate_record(record)
 
         logger.info("Completed analyzing directory: %s", context.relative_path)
 
@@ -1319,7 +1259,7 @@ class AnalyzeProcessor:
         # Create and write duplicate record
         record = DuplicateRecord(
             context.relative_path, metadata_comparisons, context.stat.st_size, 1, context.stat.st_size, 1)
-        self._writer.write_duplicate_record(record)
+        self._report_store.write_duplicate_record(record)
 
         logger.info("Completed analyzing file: %s", context.relative_path)
 
@@ -1358,8 +1298,8 @@ async def do_analyze(
                 f"a file with this name already exists"
             )
 
-        writer: ReportWriter = ReportWriter(report_dir)
-        writer.create_report_directory()
+        report_store: ReportStore = ReportStore(report_dir)
+        report_store.create_report_directory()
 
         # Create and write manifest
         manifest: ReportManifest = ReportManifest(
@@ -1368,12 +1308,15 @@ async def do_analyze(
             timestamp=datetime.now().isoformat(),
             comparison_rule=args.comparison_rule.to_dict()
         )
-        writer.write_manifest(manifest)
+        report_store.write_manifest(manifest)
 
         # Analyze the path with database context
-        with writer:
-            processor: AnalyzeProcessor = AnalyzeProcessor(store, args, input_path, writer)
+        report_store.open_database(create_if_missing=True)
+        try:
+            processor: AnalyzeProcessor = AnalyzeProcessor(store, args, input_path, report_store)
             await processor.run()
+        finally:
+            report_store.close_database()
 
         logger.info("Completed analysis for: %s", input_path)
 
@@ -1499,8 +1442,8 @@ def do_describe(paths: list[Path], options: DescribeOptions | None = None) -> No
     report_dir = get_report_directory_path(analyzed_path)
 
     try:
-        with ReportReader(report_dir, analyzed_path) as reader:
-            manifest = reader.read_manifest()
+        with ReportStore(report_dir, analyzed_path) as store:
+            manifest = store.read_manifest()
 
             # Normalize paths to relative paths within the analyzed directory
             relative_paths = []
@@ -1514,7 +1457,7 @@ def do_describe(paths: list[Path], options: DescribeOptions | None = None) -> No
             # Decide flow based on number of paths
             if len(paths) > 1:
                 # Multiple paths: display as table
-                formatter = MultiplePathsDescribeFormatter(reader, relative_paths, manifest, options)
+                formatter = MultiplePathsDescribeFormatter(store, relative_paths, manifest, options)
                 formatter.describe()
             else:
                 # Single path: display details
@@ -1522,9 +1465,9 @@ def do_describe(paths: list[Path], options: DescribeOptions | None = None) -> No
 
                 # Check if target is a directory and create appropriate formatter
                 if target_path.is_dir():
-                    formatter = DirectoryDescribeFormatter(reader, relative_paths, manifest, options)
+                    formatter = DirectoryDescribeFormatter(store, relative_paths, manifest, options)
                 else:
-                    formatter = FileDescribeFormatter(reader, relative_paths, manifest, options)
+                    formatter = FileDescribeFormatter(store, relative_paths, manifest, options)
 
                 # Execute the describe operation
                 formatter.describe()
@@ -1590,17 +1533,17 @@ class DescribeFormatter(ABC):
         ('in_report_str', 'In Report', False),
     ]
 
-    def __init__(self, reader: ReportReader, relative_paths: list[Path], manifest: ReportManifest,
+    def __init__(self, store: ReportStore, relative_paths: list[Path], manifest: ReportManifest,
                  options: DescribeOptions | None = None):
         """Initialize formatter.
 
         Args:
-            reader: ReportReader instance with open database
+            store: ReportStore instance with open database
             relative_paths: Paths relative to the analyzed target
             manifest: Report manifest
             options: Options for controlling duplicate display
         """
-        self.reader = reader
+        self.store = store
         self.relative_paths = relative_paths
         self.manifest = manifest
         self.options = options if options is not None else DescribeOptions()
@@ -1625,7 +1568,7 @@ class DescribeFormatter(ABC):
             self._print_report_metadata()
             print()
 
-        record = self.reader.read_duplicate_record(self.relative_path)
+        record = self.store.read_duplicate_record(self.relative_path)
 
         if record is None or not record.duplicates:
             print(f"No duplicates found for: {self.relative_path}")
@@ -1651,8 +1594,8 @@ class DescribeFormatter(ABC):
 
     def _print_report_metadata(self) -> None:
         """Print report metadata including path and archive information."""
-        print(f"Report: {self.reader.report_dir}")
-        print(f"Analyzed: {self.reader.analyzed_path}")
+        print(f"Report: {self.store.report_dir}")
+        print(f"Analyzed: {self.store.analyzed_path}")
         print(f"Archive: {self.manifest.archive_path}")
         print(f"Timestamp: {self.manifest.timestamp}")
 
@@ -2086,7 +2029,8 @@ class DirectoryDescribeFormatter(DescribeFormatter):
 
         # Get the absolute path to the directory being described
         # relative_path includes the analyzed_path's name as first component, so skip it
-        directory_path: Path = self.reader.analyzed_path / Path(*self.relative_path.parts[1:])
+        assert self.store.analyzed_path is not None, "analyzed_path must be set for directory describe"
+        directory_path: Path = self.store.analyzed_path / Path(*self.relative_path.parts[1:])
 
         # List children from filesystem
         try:
@@ -2108,7 +2052,7 @@ class DirectoryDescribeFormatter(DescribeFormatter):
             child_relative_path: Path = self.relative_path / child_name
 
             # Query the report for this child
-            child_record = self.reader.read_duplicate_record(child_relative_path)
+            child_record = self.store.read_duplicate_record(child_relative_path)
 
             # Build row data using the helper method
             row_data = self._build_row_data(child_name, child_path.is_dir(), child_record)
@@ -2137,9 +2081,11 @@ class MultiplePathsDescribeFormatter(DescribeFormatter):
 
         rows_data: list[SortableRowData] = []
 
+        assert self.store.analyzed_path is not None, "analyzed_path must be set for multiple paths describe"
+        analyzed_path = self.store.analyzed_path
+
         for relative_path in self.relative_paths:
             # Reconstruct the path from relative_path using analyzed_path
-            analyzed_path = self.reader.analyzed_path
             if relative_path == Path(analyzed_path.name):
                 # Path is the analyzed directory itself
                 path = analyzed_path
@@ -2148,7 +2094,7 @@ class MultiplePathsDescribeFormatter(DescribeFormatter):
                 path = analyzed_path / relative_path.relative_to(analyzed_path.name)
 
             # Get record from report using pre-computed relative path
-            record = self.reader.read_duplicate_record(relative_path)
+            record = self.store.read_duplicate_record(relative_path)
 
             # Build row data using the helper method
             row_data = self._build_row_data(path.name, path.is_dir(), record)
