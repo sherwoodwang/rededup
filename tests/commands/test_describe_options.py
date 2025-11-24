@@ -8,11 +8,8 @@ This module tests the DescribeOptions class and sorting/filtering functionality:
 import unittest
 from pathlib import Path
 
-from arindexer.commands.analyzer import (
-    DescribeOptions,
-    DuplicateMatch,
-    format_size,
-)
+from arindexer.commands.describe import DescribeOptions, format_size
+from arindexer.report.duplicate_match import DuplicateMatch
 
 
 class DescribeOptionsTest(unittest.TestCase):

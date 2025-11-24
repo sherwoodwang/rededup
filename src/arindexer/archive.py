@@ -8,8 +8,9 @@ from .utils.processor import Processor
 from .store.archive_store import ArchiveStore
 from .store.archive_settings import ArchiveSettings
 from .commands.rebuild_refresh import do_rebuild, do_refresh, RebuildRefreshArgs
-from .commands.archive_importer import do_import, ImportArgs
-from .commands.analyzer import do_analyze, AnalyzeArgs, DuplicateMatchRule
+from .commands.do_import import do_import, ImportArgs
+from .commands.analyze import do_analyze, AnalyzeArgs
+from .report.duplicate_match import DuplicateMatchRule
 
 
 class Archive:

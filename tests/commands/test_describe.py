@@ -7,12 +7,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 from arindexer import Archive
-from arindexer.commands.analyzer import (
-    DescribeFormatter,
-    SortableRowData,
-    get_report_directory_path,
-    ReportStore
-)
+from arindexer.commands.describe import DescribeFormatter, SortableRowData
+from arindexer.report.path import get_report_directory_path
+from arindexer.report.store import ReportStore
 from arindexer.utils.processor import Processor
 
 from ..test_utils import copy_times

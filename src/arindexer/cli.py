@@ -61,7 +61,8 @@ def archive_indexer():
     parser.add_argument(
         '--log-file',
         metavar='PATH',
-        help='Path to log file for operation logging. If not provided, uses logging.path from archive settings or no logging.')
+        help='Path to log file for operation logging. If not provided, uses logging.path from archive settings or no '
+             'logging.')
     parser.add_argument(
         '--log-level',
         metavar='LEVEL',
@@ -192,16 +193,19 @@ def archive_indexer():
         '--sort-by',
         choices=['size', 'items', 'identical', 'path'],
         default='size',
-        help='Sort duplicates by: size (duplicated_size, default), items (duplicated_items), identical (identity status), or path (path length)')
+        help='Sort duplicates by: size (duplicated_size, default), items (duplicated_items), identical (identity '
+             'status), or path (path length)')
     parser_describe.add_argument(
         '--sort-children',
         choices=['dup-size', 'dup-items', 'total-size', 'name'],
         default='dup-size',
-        help='Sort directory children by: dup-size (duplicated size descending, default), dup-items (duplicated items descending), total-size (total size descending), or name (alphabetically)')
+        help='Sort directory children by: dup-size (duplicated size descending, default), dup-items (duplicated items '
+             'descending), total-size (total size descending), or name (alphabetically)')
     parser_describe.add_argument(
         '--keep-input-order',
         action='store_true',
-        help='Keep the input order of paths when multiple paths are provided (default: sort by same criteria as directory children)')
+        help='Keep the input order of paths when multiple paths are provided (default: sort by same criteria as '
+             'directory children)')
     parser_describe.add_argument(
         '--bytes',
         action='store_true',
@@ -209,7 +213,8 @@ def archive_indexer():
     parser_describe.add_argument(
         '--details',
         action='store_true',
-        help='Show detailed metadata including Report, Analyzed, Archive, Timestamp, Directory/File type, and Duplicates count')
+        help='Show detailed metadata including Report, Analyzed, Archive, Timestamp, Directory/File type, and '
+             'Duplicates count')
     parser_describe.set_defaults(method=_describe, create=False)
 
     parser_inspect = subparsers.add_parser(
@@ -285,7 +290,7 @@ def _refresh(archive: Archive, output, args):
 
 @needs_archive
 def _analyze(archive: Archive, output, args):
-    from .commands.analyzer import DuplicateMatchRule
+    from .report.duplicate_match import DuplicateMatchRule
 
     paths = [Path(p) for p in args.paths]
 
@@ -304,7 +309,7 @@ def _analyze(archive: Archive, output, args):
 
 @no_archive
 def _describe(output, args):
-    from .commands.analyzer import do_describe, DescribeOptions
+    from .commands.describe import do_describe, DescribeOptions
 
     # Handle default path (current working directory if no paths provided)
     if not args.paths:

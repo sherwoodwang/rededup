@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer.commands.analyzer import find_report_for_path
+from arindexer.report.path import find_report_for_path
 
 
 class FindReportTest(unittest.TestCase):

@@ -8,7 +8,8 @@ from pathlib import Path
 import plyvel
 
 from arindexer import Archive
-from arindexer.commands.analyzer import DuplicateRecord, DuplicateMatchRule
+from arindexer.report.duplicate_match import DuplicateMatchRule
+from arindexer.report.store import DuplicateRecord
 from arindexer.utils.processor import Processor
 
 from ..test_utils import copy_times, tweak_times

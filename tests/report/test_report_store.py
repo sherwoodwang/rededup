@@ -3,11 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer.commands.analyzer import (
-    DuplicateMatch,
+from arindexer.report.duplicate_match import DuplicateMatch
+from arindexer.report.store import (
     DuplicateRecord,
+    ReportManifest,
     ReportStore,
-    ReportManifest
 )
 
 

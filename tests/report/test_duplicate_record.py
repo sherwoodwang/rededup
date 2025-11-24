@@ -2,7 +2,8 @@
 import unittest
 from pathlib import Path
 
-from arindexer.commands.analyzer import DuplicateMatch, DuplicateRecord
+from arindexer.report.duplicate_match import DuplicateMatch
+from arindexer.report.store import DuplicateRecord
 
 
 class DuplicateRecordTest(unittest.TestCase):
