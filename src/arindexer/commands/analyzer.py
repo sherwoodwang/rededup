@@ -22,141 +22,6 @@ from ..utils.walker import FileContext
 from ..store.archive_store import ArchiveStore
 
 
-class MetadataMatchReducer:
-    """Stateful reducer for computing metadata match results from stat comparisons.
-
-    This class encapsulates the logic for reducing metadata comparison results
-    from multiple stat comparisons (for child items, files, directories, or special files)
-    down to aggregate match results. It also works for single stat comparisons.
-    It starts with all metadata fields matching (True) and sets them to False if any
-    comparison has a non-matching value.
-
-    This implements an AND reduction pattern: all comparisons must have matching metadata
-    for the final result to be considered matching.
-    """
-
-    def __init__(self, comparison_rule: 'DuplicateMatchRule') -> None:
-        """Initialize reducer with all metadata matches set to True.
-
-        Args:
-            comparison_rule: Rule defining which metadata fields must match for identity
-        """
-        self.mtime_match: bool = True
-        self.atime_match: bool = True
-        self.ctime_match: bool = True
-        self.mode_match: bool = True
-        self.owner_match: bool = True
-        self.group_match: bool = True
-        self.duplicated_items: int = 0
-        self.duplicated_size: int = 0
-        self._comparison_rule: DuplicateMatchRule = comparison_rule
-
-    def aggregate_from_match(self, match: Union['DuplicateMatch', None]) -> None:
-        """Aggregate metadata matches from a DuplicateMatch.
-
-        Args:
-            match: DuplicateMatch to aggregate from
-        """
-
-        if match is None:
-            return
-
-        if not match.mtime_match:
-            self.mtime_match = False
-        if not match.atime_match:
-            self.atime_match = False
-        if not match.ctime_match:
-            self.ctime_match = False
-        if not match.mode_match:
-            self.mode_match = False
-        if not match.owner_match:
-            self.owner_match = False
-        if not match.group_match:
-            self.group_match = False
-
-        self.duplicated_items += match.duplicated_items
-        self.duplicated_size += match.duplicated_size
-
-    def aggregate_from_stat(self, analyzed_stat: os.stat_result, candidate_stat: os.stat_result) -> None:
-        """Aggregate metadata matches by comparing two stat results.
-
-        Args:
-            analyzed_stat: stat result for the analyzed item
-            candidate_stat: stat result for the candidate item
-        """
-        # Create a temporary DuplicateMatch with comparison results and aggregate from it
-        mtime_match = analyzed_stat.st_mtime_ns == candidate_stat.st_mtime_ns
-        atime_match = analyzed_stat.st_atime_ns == candidate_stat.st_atime_ns
-        ctime_match = analyzed_stat.st_ctime_ns == candidate_stat.st_ctime_ns
-        mode_match = analyzed_stat.st_mode == candidate_stat.st_mode
-        owner_match = analyzed_stat.st_uid == candidate_stat.st_uid
-        group_match = analyzed_stat.st_gid == candidate_stat.st_gid
-
-        # Use a temporary match object to leverage aggregate_from_match logic
-        temp_match = DuplicateMatch(
-            Path('.'),  # Dummy path for aggregation purposes
-            mtime_match=mtime_match,
-            atime_match=atime_match,
-            ctime_match=ctime_match,
-            mode_match=mode_match,
-            owner_match=owner_match,
-            group_match=group_match,
-            duplicated_size=0,
-            duplicated_items=0
-        )
-        self.aggregate_from_match(temp_match)
-
-    def create_duplicate_match(
-            self,
-            path: Path,
-            *,
-            non_identical: bool,
-            non_superset: bool
-    ) -> 'DuplicateMatch':
-        """Create a DuplicateMatch using aggregated metadata and calculate is_identical.
-
-        Args:
-            path: Path to the duplicate (relative to archive root)
-            non_identical: If True, forces is_identical to False (content/structure differs).
-                          If False, calculates is_identical using the comparison rule.
-            non_superset: If True, forces is_superset to False (not all items present).
-                         If False, sets is_superset equal to is_identical.
-
-        Returns:
-            DuplicateMatch with aggregated metadata and calculated is_identical
-        """
-        # Calculate metadata match using comparison rule
-        metadata_matches = self._comparison_rule.calculate_is_identical(
-            mtime_match=self.mtime_match,
-            atime_match=self.atime_match,
-            ctime_match=self.ctime_match,
-            mode_match=self.mode_match,
-            owner_match=self.owner_match,
-            group_match=self.group_match
-        )
-
-        # Calculate is_identical: requires both structure match AND metadata match
-        is_identical = (not non_identical) and metadata_matches
-
-        # Calculate is_superset: requires all analyzed items present AND metadata match
-        is_superset = (not non_superset) and metadata_matches
-
-        return DuplicateMatch(
-            path,
-            mtime_match=self.mtime_match,
-            atime_match=self.atime_match,
-            ctime_match=self.ctime_match,
-            mode_match=self.mode_match,
-            owner_match=self.owner_match,
-            group_match=self.group_match,
-            duplicated_size=self.duplicated_size,
-            duplicated_items=self.duplicated_items,
-            is_identical=is_identical,
-            is_superset=is_superset,
-            rule=self._comparison_rule
-        )
-
-
 class DuplicateMatchRule:
     """Defines which metadata properties are considered for exact identity matching.
 
@@ -340,6 +205,141 @@ class DuplicateMatch:
         self.rule = rule
 
 
+class MetadataMatchReducer:
+    """Stateful reducer for computing metadata match results from stat comparisons.
+
+    This class encapsulates the logic for reducing metadata comparison results
+    from multiple stat comparisons (for child items, files, directories, or special files)
+    down to aggregate match results. It also works for single stat comparisons.
+    It starts with all metadata fields matching (True) and sets them to False if any
+    comparison has a non-matching value.
+
+    This implements an AND reduction pattern: all comparisons must have matching metadata
+    for the final result to be considered matching.
+    """
+
+    def __init__(self, comparison_rule: 'DuplicateMatchRule') -> None:
+        """Initialize reducer with all metadata matches set to True.
+
+        Args:
+            comparison_rule: Rule defining which metadata fields must match for identity
+        """
+        self.mtime_match: bool = True
+        self.atime_match: bool = True
+        self.ctime_match: bool = True
+        self.mode_match: bool = True
+        self.owner_match: bool = True
+        self.group_match: bool = True
+        self.duplicated_items: int = 0
+        self.duplicated_size: int = 0
+        self._comparison_rule: DuplicateMatchRule = comparison_rule
+
+    def aggregate_from_match(self, match: Union['DuplicateMatch', None]) -> None:
+        """Aggregate metadata matches from a DuplicateMatch.
+
+        Args:
+            match: DuplicateMatch to aggregate from
+        """
+
+        if match is None:
+            return
+
+        if not match.mtime_match:
+            self.mtime_match = False
+        if not match.atime_match:
+            self.atime_match = False
+        if not match.ctime_match:
+            self.ctime_match = False
+        if not match.mode_match:
+            self.mode_match = False
+        if not match.owner_match:
+            self.owner_match = False
+        if not match.group_match:
+            self.group_match = False
+
+        self.duplicated_items += match.duplicated_items
+        self.duplicated_size += match.duplicated_size
+
+    def aggregate_from_stat(self, analyzed_stat: os.stat_result, candidate_stat: os.stat_result) -> None:
+        """Aggregate metadata matches by comparing two stat results.
+
+        Args:
+            analyzed_stat: stat result for the analyzed item
+            candidate_stat: stat result for the candidate item
+        """
+        # Create a temporary DuplicateMatch with comparison results and aggregate from it
+        mtime_match = analyzed_stat.st_mtime_ns == candidate_stat.st_mtime_ns
+        atime_match = analyzed_stat.st_atime_ns == candidate_stat.st_atime_ns
+        ctime_match = analyzed_stat.st_ctime_ns == candidate_stat.st_ctime_ns
+        mode_match = analyzed_stat.st_mode == candidate_stat.st_mode
+        owner_match = analyzed_stat.st_uid == candidate_stat.st_uid
+        group_match = analyzed_stat.st_gid == candidate_stat.st_gid
+
+        # Use a temporary match object to leverage aggregate_from_match logic
+        temp_match = DuplicateMatch(
+            Path('.'),  # Dummy path for aggregation purposes
+            mtime_match=mtime_match,
+            atime_match=atime_match,
+            ctime_match=ctime_match,
+            mode_match=mode_match,
+            owner_match=owner_match,
+            group_match=group_match,
+            duplicated_size=0,
+            duplicated_items=0
+        )
+        self.aggregate_from_match(temp_match)
+
+    def create_duplicate_match(
+            self,
+            path: Path,
+            *,
+            non_identical: bool,
+            non_superset: bool
+    ) -> 'DuplicateMatch':
+        """Create a DuplicateMatch using aggregated metadata and calculate is_identical.
+
+        Args:
+            path: Path to the duplicate (relative to archive root)
+            non_identical: If True, forces is_identical to False (content/structure differs).
+                          If False, calculates is_identical using the comparison rule.
+            non_superset: If True, forces is_superset to False (not all items present).
+                         If False, sets is_superset equal to is_identical.
+
+        Returns:
+            DuplicateMatch with aggregated metadata and calculated is_identical
+        """
+        # Calculate metadata match using comparison rule
+        metadata_matches = self._comparison_rule.calculate_is_identical(
+            mtime_match=self.mtime_match,
+            atime_match=self.atime_match,
+            ctime_match=self.ctime_match,
+            mode_match=self.mode_match,
+            owner_match=self.owner_match,
+            group_match=self.group_match
+        )
+
+        # Calculate is_identical: requires both structure match AND metadata match
+        is_identical = (not non_identical) and metadata_matches
+
+        # Calculate is_superset: requires all analyzed items present AND metadata match
+        is_superset = (not non_superset) and metadata_matches
+
+        return DuplicateMatch(
+            path,
+            mtime_match=self.mtime_match,
+            atime_match=self.atime_match,
+            ctime_match=self.ctime_match,
+            mode_match=self.mode_match,
+            owner_match=self.owner_match,
+            group_match=self.group_match,
+            duplicated_size=self.duplicated_size,
+            duplicated_items=self.duplicated_items,
+            is_identical=is_identical,
+            is_superset=is_superset,
+            rule=self._comparison_rule
+        )
+
+
 class DuplicateRecord:
     """Record of a file and its duplicates in the archive with metadata comparisons.
 
@@ -480,113 +480,6 @@ class DuplicateRecord:
             duplicates.append(comparison)
 
         return cls(path, duplicates, total_size, total_items, duplicated_size, duplicated_items)
-
-
-class FileAnalysisResult(ABC):
-    """Abstract base class for file analysis results.
-
-    Subclasses represent different types of analysis outcomes for files and directories.
-    """
-    pass
-
-
-class ImmediateResult(FileAnalysisResult):
-    """Immediate result exposing DuplicateRecord interface with zero values if no duplicates found.
-
-    This class represents the immediate analysis result for a file or directory. It provides
-    a consistent interface for accessing duplicate information, returning sensible defaults
-    (empty list or zero) when no duplicates are found.
-
-    The report_path represents the path to the analyzed item relative to the parent of the
-    input path (the path that was passed to the analyzer). This allows consistent tracking
-    of paths across both files and directories during analysis.
-    """
-
-    def __init__(
-            self,
-            report_path: Path,
-            duplicates: list[DuplicateMatch],
-            total_size: int,
-            total_items: int,
-            duplicated_size: int,
-            duplicated_items: int
-    ):
-        """Initialize an ImmediateResult.
-
-        Args:
-            report_path: Path relative to the parent of the input path being analyzed
-            duplicates: List of DuplicateMatch objects for each duplicate found in the archive
-            total_size: Total size in bytes of all content within this path
-            total_items: Total count of items within this path
-            duplicated_size: Total size in bytes of content that has content-equivalent files in the archive
-            duplicated_items: Total count of items that have content-equivalent files in the archive
-        """
-        self.report_path = report_path
-        self.duplicates = duplicates
-        self.total_size = total_size
-        self.total_items = total_items
-        self.duplicated_size = duplicated_size
-        self.duplicated_items = duplicated_items
-        self.base_name = report_path.name
-
-    @classmethod
-    def from_duplicate_record(cls, duplicate_record: DuplicateRecord) -> 'ImmediateResult':
-        """Create an ImmediateResult from a DuplicateRecord.
-
-        Args:
-            duplicate_record: Complete duplicate record with path and duplicate information
-
-        Returns:
-            ImmediateResult instance constructed from the duplicate record
-        """
-        return cls(
-            report_path=duplicate_record.path,
-            duplicates=duplicate_record.duplicates,
-            total_size=duplicate_record.total_size,
-            total_items=duplicate_record.total_items,
-            duplicated_size=duplicate_record.duplicated_size,
-            duplicated_items=duplicate_record.duplicated_items
-        )
-
-
-class DeferredResult(FileAnalysisResult):
-    """Deferred result for items that will be analyzed later.
-
-    Used for non-regular files (symlinks, devices, etc.) that cannot be analyzed
-    immediately and must be deferred for comparison by their parent directory handler.
-
-    Attributes:
-        base_name: Base name of the file or directory, deduced from report_path
-    """
-
-    def __init__(self, report_path: Path, total_size: int, total_items: int, duplicated_size: int,
-                 duplicated_items: int):
-        """Initialize a DeferredResult.
-
-        Args:
-            report_path: Path relative to the parent of the input path being analyzed.
-                        The base_name is derived from the name component of this path.
-            total_size: Total size in bytes
-            total_items: Total count of items
-            duplicated_size: Total duplicated size in bytes
-            duplicated_items: Total count of duplicated items
-        """
-        self.report_path = report_path
-        self.base_name = report_path.name
-        self.total_size = total_size
-        self.total_items = total_items
-        self.duplicated_size = duplicated_size
-        self.duplicated_items = duplicated_items
-
-
-class AnalyzeArgs(NamedTuple):
-    """Arguments for analyze command operations."""
-    processor: Processor  # File processing backend for content comparison
-    input_paths: list[Path]  # List of files/directories to analyze
-    hash_algorithm: tuple[int, Any]  # Hash algorithm configuration (digest_size, calculator)
-    archive_id: str  # Current archive identifier
-    archive_path: Path  # Path to the archive
-    comparison_rule: DuplicateMatchRule  # Rule defining which metadata must match for identity
 
 
 @dataclass
@@ -778,6 +671,113 @@ class ReportStore:
         path_str = '\0'.join(str(part) for part in path.parts)
         hash_value = mmh3.hash128(path_str.encode('utf-8'), signed=False)
         return hash_value.to_bytes(16, byteorder='big')
+
+
+class FileAnalysisResult(ABC):
+    """Abstract base class for file analysis results.
+
+    Subclasses represent different types of analysis outcomes for files and directories.
+    """
+    pass
+
+
+class ImmediateResult(FileAnalysisResult):
+    """Immediate result exposing DuplicateRecord interface with zero values if no duplicates found.
+
+    This class represents the immediate analysis result for a file or directory. It provides
+    a consistent interface for accessing duplicate information, returning sensible defaults
+    (empty list or zero) when no duplicates are found.
+
+    The report_path represents the path to the analyzed item relative to the parent of the
+    input path (the path that was passed to the analyzer). This allows consistent tracking
+    of paths across both files and directories during analysis.
+    """
+
+    def __init__(
+            self,
+            report_path: Path,
+            duplicates: list[DuplicateMatch],
+            total_size: int,
+            total_items: int,
+            duplicated_size: int,
+            duplicated_items: int
+    ):
+        """Initialize an ImmediateResult.
+
+        Args:
+            report_path: Path relative to the parent of the input path being analyzed
+            duplicates: List of DuplicateMatch objects for each duplicate found in the archive
+            total_size: Total size in bytes of all content within this path
+            total_items: Total count of items within this path
+            duplicated_size: Total size in bytes of content that has content-equivalent files in the archive
+            duplicated_items: Total count of items that have content-equivalent files in the archive
+        """
+        self.report_path = report_path
+        self.duplicates = duplicates
+        self.total_size = total_size
+        self.total_items = total_items
+        self.duplicated_size = duplicated_size
+        self.duplicated_items = duplicated_items
+        self.base_name = report_path.name
+
+    @classmethod
+    def from_duplicate_record(cls, duplicate_record: DuplicateRecord) -> 'ImmediateResult':
+        """Create an ImmediateResult from a DuplicateRecord.
+
+        Args:
+            duplicate_record: Complete duplicate record with path and duplicate information
+
+        Returns:
+            ImmediateResult instance constructed from the duplicate record
+        """
+        return cls(
+            report_path=duplicate_record.path,
+            duplicates=duplicate_record.duplicates,
+            total_size=duplicate_record.total_size,
+            total_items=duplicate_record.total_items,
+            duplicated_size=duplicate_record.duplicated_size,
+            duplicated_items=duplicate_record.duplicated_items
+        )
+
+
+class DeferredResult(FileAnalysisResult):
+    """Deferred result for items that will be analyzed later.
+
+    Used for non-regular files (symlinks, devices, etc.) that cannot be analyzed
+    immediately and must be deferred for comparison by their parent directory handler.
+
+    Attributes:
+        base_name: Base name of the file or directory, deduced from report_path
+    """
+
+    def __init__(self, report_path: Path, total_size: int, total_items: int, duplicated_size: int,
+                 duplicated_items: int):
+        """Initialize a DeferredResult.
+
+        Args:
+            report_path: Path relative to the parent of the input path being analyzed.
+                        The base_name is derived from the name component of this path.
+            total_size: Total size in bytes
+            total_items: Total count of items
+            duplicated_size: Total duplicated size in bytes
+            duplicated_items: Total count of duplicated items
+        """
+        self.report_path = report_path
+        self.base_name = report_path.name
+        self.total_size = total_size
+        self.total_items = total_items
+        self.duplicated_size = duplicated_size
+        self.duplicated_items = duplicated_items
+
+
+class AnalyzeArgs(NamedTuple):
+    """Arguments for analyze command operations."""
+    processor: Processor  # File processing backend for content comparison
+    input_paths: list[Path]  # List of files/directories to analyze
+    hash_algorithm: tuple[int, Any]  # Hash algorithm configuration (digest_size, calculator)
+    archive_id: str  # Current archive identifier
+    archive_path: Path  # Path to the archive
+    comparison_rule: DuplicateMatchRule  # Rule defining which metadata must match for identity
 
 
 class AnalyzeProcessor:
