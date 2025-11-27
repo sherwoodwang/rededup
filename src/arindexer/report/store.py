@@ -1,7 +1,5 @@
 """Report storage for duplicate analysis results."""
 
-from __future__ import annotations
-
 import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -121,7 +119,7 @@ class DuplicateRecord:
         return result
 
     @classmethod
-    def from_msgpack(cls, data: bytes) -> DuplicateRecord:
+    def from_msgpack(cls, data: bytes) -> "DuplicateRecord":
         """Deserialize from msgpack format.
 
         Args:
@@ -185,7 +183,7 @@ class ReportManifest:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ReportManifest:
+    def from_dict(cls, data: dict[str, Any]) -> "ReportManifest":
         """Load manifest from dictionary."""
         return cls(**data)
 
@@ -230,7 +228,7 @@ class ReportStore:
             self._database.close()
             self._database = None
 
-    def __enter__(self) -> ReportStore:
+    def __enter__(self) -> "ReportStore":
         """Context manager entry."""
         self.open_database()
         return self
@@ -307,7 +305,7 @@ class ReportStore:
         with open(self.manifest_path, 'w') as f:
             json.dump(manifest.to_dict(), f, indent=2)
 
-    def read_manifest(self) -> ReportManifest:
+    def read_manifest(self) -> "ReportManifest":
         """Read existing report manifest.
 
         Returns:

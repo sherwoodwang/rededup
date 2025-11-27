@@ -17,10 +17,13 @@ class FindReportTest(unittest.TestCase):
             report_dir = Path(str(target_path) + '.report')
             report_dir.mkdir()
 
-            analyzed_path = find_report_for_path(target_path)
+            result = find_report_for_path(target_path)
 
-            self.assertIsNotNone(analyzed_path)
+            self.assertIsNotNone(result)
+            analyzed_path, record_path = result
             self.assertEqual(target_path.resolve(), analyzed_path)
+            # record_path should start with the analyzed directory name
+            self.assertEqual(Path('target'), record_path)
 
     def test_find_report_for_child_file(self):
         """Test finding report for a file inside analyzed directory."""
@@ -33,10 +36,13 @@ class FindReportTest(unittest.TestCase):
             report_dir = Path(str(target_path) + '.report')
             report_dir.mkdir()
 
-            analyzed_path = find_report_for_path(child_file)
+            result = find_report_for_path(child_file)
 
-            self.assertIsNotNone(analyzed_path)
+            self.assertIsNotNone(result)
+            analyzed_path, record_path = result
             self.assertEqual(target_path.resolve(), analyzed_path)
+            # record_path should include the analyzed directory name
+            self.assertEqual(Path('target') / 'file.txt', record_path)
 
     def test_find_report_for_nested_file(self):
         """Test finding report for a deeply nested file."""
@@ -51,10 +57,13 @@ class FindReportTest(unittest.TestCase):
             report_dir = Path(str(target_path) + '.report')
             report_dir.mkdir()
 
-            analyzed_path = find_report_for_path(nested_file)
+            result = find_report_for_path(nested_file)
 
-            self.assertIsNotNone(analyzed_path)
+            self.assertIsNotNone(result)
+            analyzed_path, record_path = result
             self.assertEqual(target_path.resolve(), analyzed_path)
+            # record_path should include the analyzed directory name
+            self.assertEqual(Path('target') / 'subdir' / 'deep' / 'file.txt', record_path)
 
     def test_find_report_not_found(self):
         """Test when no report exists."""
@@ -81,11 +90,14 @@ class FindReportTest(unittest.TestCase):
             file_in_inner = inner / 'file.txt'
             file_in_inner.write_text('test')
 
-            analyzed_path = find_report_for_path(file_in_inner)
+            result = find_report_for_path(file_in_inner)
 
-            self.assertIsNotNone(analyzed_path)
+            self.assertIsNotNone(result)
+            analyzed_path, record_path = result
             # Should find the outer analyzed path
             self.assertEqual(outer.resolve(), analyzed_path)
+            # record_path should include the analyzed directory name
+            self.assertEqual(Path('outer') / 'inner' / 'file.txt', record_path)
 
 
 if __name__ == '__main__':

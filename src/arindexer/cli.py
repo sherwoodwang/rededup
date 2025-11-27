@@ -217,6 +217,49 @@ def archive_indexer():
              'Duplicates count')
     parser_describe.set_defaults(method=_describe, create=False)
 
+    parser_diff_tree = subparsers.add_parser(
+        'diff-tree',
+        help='Compare directory trees between analyzed path and archive duplicate',
+        description='Displays a file tree comparison between an analyzed directory and one of its '
+                    'duplicates in the archive. Shows which files exist in both, only in analyzed, '
+                    'or only in archive.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent('''
+            Examples:
+              arindexer diff-tree /path/to/analyzed/dir /archive/path/to/duplicate
+
+            The analyzed path must have an existing analysis report.
+            The archive path must be a known duplicate of the analyzed path.
+            ''').strip())
+    parser_diff_tree.add_argument(
+        'analyzed_path',
+        metavar='ANALYZED_PATH',
+        help='Path to the analyzed directory (must have an existing report)')
+    parser_diff_tree.add_argument(
+        'archive_path',
+        metavar='ARCHIVE_PATH',
+        help='Path to the duplicate directory in the archive')
+    parser_diff_tree.add_argument(
+        '--hide-content-match',
+        action='store_true',
+        help='Hide files that match content but differ in metadata (only show structural differences)')
+    parser_diff_tree.add_argument(
+        '--max-depth',
+        type=int,
+        metavar='N',
+        default=3,
+        help='Maximum depth to display (default: 3, show "..." for deeper levels)')
+    parser_diff_tree.add_argument(
+        '--unlimited',
+        action='store_true',
+        help='Show unlimited depth (overrides --max-depth)')
+    parser_diff_tree.add_argument(
+        '--show',
+        choices=['both', 'analyzed', 'archive'],
+        default='both',
+        help='Filter which files to show: both (default), analyzed (files in analyzed dir), or archive (files in archive dir)')
+    parser_diff_tree.set_defaults(method=_diff_tree, create=False)
+
     parser_inspect = subparsers.add_parser(
         'inspect',
         help='Inspect and display archive records',
@@ -351,6 +394,25 @@ def _describe(output, args):
 
     # Always pass a list to do_describe
     do_describe(paths, options)
+
+
+@no_archive
+def _diff_tree(output, args):
+    from .commands.diff_tree import do_diff_tree
+
+    analyzed_path = Path(args.analyzed_path)
+    archive_path = Path(args.archive_path)
+
+    # Handle unlimited flag
+    max_depth = None if args.unlimited else args.max_depth
+
+    do_diff_tree(
+        analyzed_path,
+        archive_path,
+        hide_content_match=args.hide_content_match,
+        max_depth=max_depth,
+        show_filter=args.show
+    )
 
 
 @needs_archive

@@ -723,6 +723,150 @@ class DirectoryAnalysisTest(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_broken_symlinks_counted_when_targets_match(self):
+        """Test that broken symlinks are counted in duplicated_items when targets match.
+
+        This test addresses a bug where broken symlinks (pointing to non-existent targets)
+        were not being counted in duplicated_items even when both sides had matching
+        symlink targets. The bug was that _compare_deferred_item didn't set
+        reducer.duplicated_items = 1 for matched non-directory items.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'broken_link_dir'
+            archive_dir.mkdir()
+            # Create regular file
+            (archive_dir / 'file.txt').write_bytes(b'content')
+            # Create broken symlink (target doesn't exist)
+            (archive_dir / 'broken_link').symlink_to('/nonexistent/target')
+            # Create another broken symlink with different target
+            (archive_dir / 'broken_link2').symlink_to('/another/nonexistent')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_dir = target_path / 'broken_link_copy'
+            target_dir.mkdir()
+            # Create matching regular file
+            target_file = target_dir / 'file.txt'
+            target_file.write_bytes(b'content')
+            copy_times(archive_dir / 'file.txt', target_file)
+            # Create broken symlinks with matching targets
+            target_link = target_dir / 'broken_link'
+            target_link.symlink_to('/nonexistent/target')
+            copy_times(archive_dir / 'broken_link', target_link)
+            target_link2 = target_dir / 'broken_link2'
+            target_link2.symlink_to('/another/nonexistent')
+            copy_times(archive_dir / 'broken_link2', target_link2)
+            # Copy directory mtime
+            copy_times(archive_dir, target_dir)
+
+            report_dir = target_dir.parent / (target_dir.name + '.report')
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_dir])
+
+            # Verify broken symlinks are counted correctly
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found_dir_record = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if 'broken_link_copy' in str(record.path) and len(record.duplicates) > 0:
+                            comparison = record.duplicates[0]
+                            if 'broken_link_dir' in str(comparison.path):
+                                found_dir_record = True
+                                # Should be identical (file + 2 symlinks all match)
+                                self.assertTrue(comparison.is_identical,
+                                    "is_identical should be True when all items including broken symlinks match")
+                                self.assertTrue(comparison.is_superset,
+                                    "is_superset should be True when all items match")
+                                # Should have 3 duplicated_items: 1 file + 2 broken symlinks
+                                self.assertEqual(3, comparison.duplicated_items,
+                                    "duplicated_items should count broken symlinks when targets match")
+                                # Should have 3 total_items as well
+                                self.assertEqual(3, record.total_items,
+                                    "total_items should include all items")
+                                break
+                    except Exception as e:
+                        pass
+
+                self.assertTrue(found_dir_record, "Directory with broken symlinks not found")
+            finally:
+                db.close()
+
+    def test_broken_symlinks_not_counted_when_targets_differ(self):
+        """Test that broken symlinks are NOT counted in duplicated_items when targets differ.
+
+        This test verifies that broken symlinks with different targets between
+        analyzed and archive are not counted as matches, ensuring the fix for
+        duplicated_items counting works correctly in the negative case.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'link_dir'
+            archive_dir.mkdir()
+            # Create regular file
+            (archive_dir / 'file.txt').write_bytes(b'content')
+            # Create broken symlink in archive
+            (archive_dir / 'link').symlink_to('/archive/target')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_dir = target_path / 'link_dir_copy'
+            target_dir.mkdir()
+            # Create matching regular file
+            target_file = target_dir / 'file.txt'
+            target_file.write_bytes(b'content')
+            copy_times(archive_dir / 'file.txt', target_file)
+            # Create broken symlink with DIFFERENT target
+            (target_dir / 'link').symlink_to('/analyzed/different_target')
+
+            report_dir = target_dir.parent / (target_dir.name + '.report')
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_dir])
+
+            # Verify broken symlinks with different targets are not counted
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found_dir_record = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if 'link_dir_copy' in str(record.path) and len(record.duplicates) > 0:
+                            comparison = record.duplicates[0]
+                            if 'link_dir' in str(comparison.path):
+                                found_dir_record = True
+                                # Should NOT be identical (symlink targets differ)
+                                self.assertFalse(comparison.is_identical,
+                                    "is_identical should be False when symlink targets differ")
+                                self.assertFalse(comparison.is_superset,
+                                    "is_superset should be False when symlink targets differ")
+                                # Should have only 1 duplicated_item (just the file, not the mismatched symlink)
+                                self.assertEqual(1, comparison.duplicated_items,
+                                    "duplicated_items should NOT count symlinks with different targets")
+                                # Should have 2 total_items (file + symlink)
+                                self.assertEqual(2, record.total_items,
+                                    "total_items should include all items")
+                                break
+                    except Exception as e:
+                        pass
+
+                self.assertTrue(found_dir_record, "Directory with symlinks not found")
+            finally:
+                db.close()
+
 
 if __name__ == '__main__':
     unittest.main()

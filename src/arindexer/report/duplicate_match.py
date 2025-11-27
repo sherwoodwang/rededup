@@ -1,7 +1,5 @@
 """DuplicateMatch and related classes for comparing files and directories."""
 
-from __future__ import annotations
-
 import os
 from pathlib import Path
 from typing import Union
@@ -95,7 +93,7 @@ class DuplicateMatchRule:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, bool]) -> DuplicateMatchRule:
+    def from_dict(cls, data: dict[str, bool]) -> "DuplicateMatchRule":
         """Load rule from dictionary."""
         return cls(
             include_mtime=data.get('include_mtime', True),

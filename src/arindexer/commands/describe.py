@@ -1,7 +1,5 @@
 """Describe subcommand for displaying duplicate analysis results."""
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,41 +61,44 @@ def do_describe(paths: list[Path], options: DescribeOptions | None = None) -> No
     if options is None:
         options = DescribeOptions()
 
-    # Resolve all paths
-    paths = [p.resolve() for p in paths]
+    # Find reports for all paths and verify they share the same analyzed path
+    # find_report_for_path() handles all path normalization
+    analyzed_path: Path | None = None
+    report_dir: Path | None = None
+    relative_paths: list[Path] = []
 
-    # Check if all paths exist
     for path in paths:
-        if not path.exists():
-            print(f"Error: Path does not exist: {path}")
+        result = find_report_for_path(path)
+        if result is None:
+            # Provide better error messages when report lookup fails
+            if not path.exists():
+                print(f"Error: Path does not exist: {path}")
+            else:
+                print(f"No analysis report found for: {path}")
+                print(f"Run 'arindexer analyze {path}' to generate a report.")
             return
 
-    # Find a common analyzed path that works for all paths
-    report_info = []
-    for path in paths:
-        analyzed_path = find_report_for_path(path)
+        path_analyzed, path_record = result
+
+        # Check if this path matches the analyzed path from the first path
         if analyzed_path is None:
-            print(f"No analysis report found for: {path}")
-            print(f"Run 'arindexer analyze {path}' to generate a report.")
+            analyzed_path = path_analyzed
+            report_dir = get_report_directory_path(analyzed_path)
+        elif path_analyzed != analyzed_path:
+            print(f"Error: Paths belong to different analyzed directories")
+            print(f"  {paths[0]} -> {analyzed_path}")
+            print(f"  {path} -> {path_analyzed}")
             return
-        report_info.append((path, analyzed_path))
 
-    # Use the first analyzed path as context
-    analyzed_path = report_info[0][1]
-    report_dir = get_report_directory_path(analyzed_path)
+        # Use the returned record_path which already includes the analyzed directory name
+        relative_paths.append(path_record)
+
+    # At this point, analyzed_path and report_dir must be set (we process at least one path)
+    assert analyzed_path is not None and report_dir is not None
 
     try:
         with ReportStore(report_dir, analyzed_path) as store:
             manifest = store.read_manifest()
-
-            # Normalize paths to relative paths within the analyzed directory
-            relative_paths = []
-            for path in paths:
-                if path == analyzed_path:
-                    relative_path = Path(analyzed_path.name)
-                else:
-                    relative_path = Path(analyzed_path.name) / path.relative_to(analyzed_path)
-                relative_paths.append(relative_path)
 
             # Decide flow based on number of paths
             if len(paths) > 1:

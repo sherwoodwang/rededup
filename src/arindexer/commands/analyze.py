@@ -7,8 +7,6 @@ This module contains the processor for analyze command operations, including:
 - do_analyze - Entry point for analysis
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import os
@@ -81,7 +79,7 @@ class ImmediateResult(FileAnalysisResult):
         self.base_name = report_path.name
 
     @classmethod
-    def from_duplicate_record(cls, duplicate_record: DuplicateRecord) -> ImmediateResult:
+    def from_duplicate_record(cls, duplicate_record: DuplicateRecord) -> "ImmediateResult":
         """Create an ImmediateResult from a DuplicateRecord.
 
         Args:
@@ -467,28 +465,50 @@ class AnalyzeProcessor:
         if stat.S_ISLNK(analyzed_stat.st_mode):
             # Symlinks: compare targets
             analyzed_target = analyzed_item_path.readlink()
+            has_match = False
             for idx, entry in enumerate(candidate_states):
                 if entry is None:
                     continue
-                candidate_path, _, _ = entry
+                candidate_path, _, reducer = entry
                 if analyzed_target != candidate_path.readlink():
                     candidate_states[idx] = None
+                else:
+                    # Symlink matched - set duplicated_items for this candidate
+                    reducer.duplicated_items = 1
+                    has_match = True
+            if has_match:
+                total_matched += 1
 
         elif stat.S_ISBLK(analyzed_stat.st_mode) or stat.S_ISCHR(analyzed_stat.st_mode):
             # Device files: compare major/minor numbers
             analyzed_major = os.major(analyzed_stat.st_rdev)
             analyzed_minor = os.minor(analyzed_stat.st_rdev)
+            has_match = False
             for idx, entry in enumerate(candidate_states):
                 if entry is None:
                     continue
-                _, candidate_stat, _ = entry
+                _, candidate_stat, reducer = entry
                 if (os.major(candidate_stat.st_rdev) != analyzed_major or
                         os.minor(candidate_stat.st_rdev) != analyzed_minor):
                     candidate_states[idx] = None
+                else:
+                    # Device matched - set duplicated_items for this candidate
+                    reducer.duplicated_items = 1
+                    has_match = True
+            if has_match:
+                total_matched += 1
 
         elif stat.S_ISFIFO(analyzed_stat.st_mode) or stat.S_ISSOCK(analyzed_stat.st_mode):
             # Pipes/sockets: existence check is sufficient
-            pass
+            # Set duplicated_items for all valid candidates
+            has_match = False
+            for entry in candidate_states:
+                if entry is not None:
+                    _, _, reducer = entry
+                    reducer.duplicated_items = 1
+                    has_match = True
+            if has_match:
+                total_matched += 1
 
         elif stat.S_ISDIR(analyzed_stat.st_mode):
             # For directories, recursively compare all subitems
@@ -542,10 +562,6 @@ class AnalyzeProcessor:
                 non_identical=non_identical,
                 non_superset=non_superset,
             ))
-
-        # Count this item as matched if any candidate matched (directories don't count)
-        if not stat.S_ISDIR(analyzed_stat.st_mode) and any(result is not None for result in results):
-            total_matched += 1
 
         return total_matched, results
 
@@ -662,8 +678,15 @@ async def do_analyze(
         report_store.create_report_directory()
 
         # Create and write manifest
+        # Normalize archive_path to remove . and .. components without following symlinks
+        # - Path() keeps .. components (e.g., Path("/a/b/../c") has .. in parts)
+        # - Path.resolve() follows symlinks on filesystem (undesirable here)
+        # - os.path.normpath() removes . and .. without following symlinks (what we want)
+        archive_path_normalized = args.archive_path if args.archive_path.is_absolute() else Path.cwd() / args.archive_path
+        archive_path_normalized = Path(os.path.normpath(str(archive_path_normalized)))
+
         manifest: ReportManifest = ReportManifest(
-            archive_path=str(args.archive_path.resolve()),
+            archive_path=str(archive_path_normalized),
             archive_id=args.archive_id,
             timestamp=datetime.now().isoformat(),
             comparison_rule=args.comparison_rule.to_dict()
