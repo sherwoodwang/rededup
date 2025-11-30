@@ -164,8 +164,14 @@ class DuplicateMatch:
 
         is_superset: Whether duplicate_path contains all content from the analyzed item (possibly with extras).
                     For files: Always equals is_identical (files are atomic, no partial matches).
-                    For directories: True when duplicate contains all files from analyzed directory.
-                    The duplicate may have additional files not in the analyzed directory.
+                    For directories: True when ALL of the following conditions are met:
+                      - All analyzed files/directories are present in the duplicate (content-wise)
+                      - All analyzed content has matching metadata (per the comparison rule)
+                      - All child directories are also supersets of their analyzed counterparts
+                      - The duplicate may contain additional files not in the analyzed directory
+                    Note: This is strictly about content coverage with matching metadata, not just
+                    structural presence. If any descendant file differs in content or metadata,
+                    the entire ancestor chain will have is_superset=False.
     """
 
     def __init__(self, path: Path, *, mtime_match: bool,
@@ -199,6 +205,21 @@ class MetadataMatchReducer:
 
     This implements an AND reduction pattern: all comparisons must have matching metadata
     for the final result to be considered matching.
+
+    Attributes:
+        mtime_match, atime_match, ctime_match, mode_match, owner_match, group_match:
+            Metadata field match flags. Start as True and become False if any child has
+            a non-matching value.
+
+        duplicated_items: Count of items that matched (content-wise).
+        duplicated_size: Total size of items that matched (content-wise).
+
+        non_identical: True if any child has is_identical=False. This propagates up the
+            directory tree to ensure parents are not marked identical when descendants differ.
+
+        non_superset: True if any child has is_superset=False. This propagates up the
+            directory tree to ensure parents are not marked as supersets when any descendant
+            is not a superset (e.g., missing content or metadata mismatch).
     """
 
     def __init__(self, comparison_rule: DuplicateMatchRule) -> None:
@@ -215,6 +236,8 @@ class MetadataMatchReducer:
         self.group_match: bool = True
         self.duplicated_items: int = 0
         self.duplicated_size: int = 0
+        self.non_identical: bool = False
+        self.non_superset: bool = False
         self._comparison_rule: DuplicateMatchRule = comparison_rule
 
     def aggregate_from_match(self, match: Union[DuplicateMatch, None]) -> None:
@@ -240,35 +263,41 @@ class MetadataMatchReducer:
         if not match.group_match:
             self.group_match = False
 
+        # Propagate non-identical and non-superset flags from children
+        if not match.is_identical:
+            self.non_identical = True
+        if not match.is_superset:
+            self.non_superset = True
+
         self.duplicated_items += match.duplicated_items
         self.duplicated_size += match.duplicated_size
 
     def aggregate_from_stat(self, analyzed_stat: os.stat_result, candidate_stat: os.stat_result) -> None:
         """Aggregate metadata matches by comparing two stat results.
 
+        This method compares stat metadata fields and updates the reducer's match flags.
+        It does NOT propagate is_identical/is_superset flags, as stat comparisons only
+        provide metadata comparison results, not semantic identity/superset information.
+
         Args:
             analyzed_stat: stat result for the analyzed item
             candidate_stat: stat result for the candidate item
         """
-        # Create a temporary DuplicateMatch with comparison results and aggregate from it
-        mtime_match = analyzed_stat.st_mtime_ns == candidate_stat.st_mtime_ns
-        atime_match = analyzed_stat.st_atime_ns == candidate_stat.st_atime_ns
-        ctime_match = analyzed_stat.st_ctime_ns == candidate_stat.st_ctime_ns
-        mode_match = analyzed_stat.st_mode == candidate_stat.st_mode
-        owner_match = analyzed_stat.st_uid == candidate_stat.st_uid
-        group_match = analyzed_stat.st_gid == candidate_stat.st_gid
-
-        # Use a temporary match object to leverage aggregate_from_match logic
+        # Create a temporary DuplicateMatch with comparison results
+        # IMPORTANT: Set is_identical=True and is_superset=True to prevent propagation
+        # of non-identical/non-superset flags. We're only comparing metadata here.
         temp_match = DuplicateMatch(
             Path('.'),  # Dummy path for aggregation purposes
-            mtime_match=mtime_match,
-            atime_match=atime_match,
-            ctime_match=ctime_match,
-            mode_match=mode_match,
-            owner_match=owner_match,
-            group_match=group_match,
+            mtime_match=analyzed_stat.st_mtime_ns == candidate_stat.st_mtime_ns,
+            atime_match=analyzed_stat.st_atime_ns == candidate_stat.st_atime_ns,
+            ctime_match=analyzed_stat.st_ctime_ns == candidate_stat.st_ctime_ns,
+            mode_match=analyzed_stat.st_mode == candidate_stat.st_mode,
+            owner_match=analyzed_stat.st_uid == candidate_stat.st_uid,
+            group_match=analyzed_stat.st_gid == candidate_stat.st_gid,
             duplicated_size=0,
-            duplicated_items=0
+            duplicated_items=0,
+            is_identical=True,  # Don't propagate non-identical flag
+            is_superset=True    # Don't propagate non-superset flag
         )
         self.aggregate_from_match(temp_match)
 
@@ -279,17 +308,29 @@ class MetadataMatchReducer:
             non_identical: bool,
             non_superset: bool
     ) -> DuplicateMatch:
-        """Create a DuplicateMatch using aggregated metadata and calculate is_identical.
+        """Create a DuplicateMatch using aggregated metadata and calculate identity/superset flags.
 
         Args:
             path: Path to the duplicate (relative to archive root)
-            non_identical: If True, forces is_identical to False (content/structure differs).
-                          If False, calculates is_identical using the comparison rule.
-            non_superset: If True, forces is_superset to False (not all items present).
-                         If False, sets is_superset equal to is_identical.
+            non_identical: If True, forces is_identical to False (structural mismatch at this level).
+                          For directories, this is True when the set of immediate child names differs.
+                          For files, this is typically False (files are compared by content).
+            non_superset: If True, forces is_superset to False (not all analyzed items present at this level).
+                         For directories, this is True when analyzed children are not a subset of
+                         candidate children (i.e., some analyzed items are missing from the candidate).
 
         Returns:
-            DuplicateMatch with aggregated metadata and calculated is_identical
+            DuplicateMatch with aggregated metadata and calculated is_identical/is_superset flags.
+
+            is_identical is True only when:
+              - non_identical is False (structure matches at this level)
+              - self.non_identical is False (no child has differences)
+              - metadata_matches is True (all required metadata fields match)
+
+            is_superset is True only when:
+              - non_superset is False (all analyzed items present at this level)
+              - self.non_superset is False (all children are supersets)
+              - metadata_matches is True (all required metadata fields match)
         """
         # Calculate metadata match using comparison rule
         metadata_matches = self._comparison_rule.calculate_is_identical(
@@ -301,11 +342,19 @@ class MetadataMatchReducer:
             group_match=self.group_match
         )
 
-        # Calculate is_identical: requires both structure match AND metadata match
-        is_identical = (not non_identical) and metadata_matches
+        # Calculate is_identical: requires structure match AND metadata match AND no non-identical children
+        # All three conditions must be satisfied:
+        # 1. non_identical parameter is False (structural match at this level)
+        # 2. self.non_identical is False (no child has differences)
+        # 3. metadata_matches is True (all required metadata fields match)
+        is_identical = (not non_identical) and (not self.non_identical) and metadata_matches
 
-        # Calculate is_superset: requires all analyzed items present AND metadata match
-        is_superset = (not non_superset) and metadata_matches
+        # Calculate is_superset: requires all analyzed items present AND metadata match AND children are supersets
+        # All three conditions must be satisfied:
+        # 1. non_superset parameter is False (all analyzed items present at this level)
+        # 2. self.non_superset is False (all children are supersets)
+        # 3. metadata_matches is True (all required metadata fields match)
+        is_superset = (not non_superset) and (not self.non_superset) and metadata_matches
 
         return DuplicateMatch(
             path,

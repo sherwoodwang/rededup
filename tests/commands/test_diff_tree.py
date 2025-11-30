@@ -404,7 +404,7 @@ class DiffTreeIntegrationTest(unittest.TestCase):
             superset_common = target_path / 'superset_dir' / 'common.txt'
             superset_common.write_bytes(b'shared')
             copy_times(archive_dir / 'superset_dir' / 'common.txt', superset_common)
-            # Copy directory mtime so metadata matches (superset is about content, not metadata)
+            # Copy directory times so metadata matches (mode/owner/group inherited from tmpdir)
             copy_times(archive_dir / 'superset_dir', target_path / 'superset_dir')
 
             # Partial directory (analyzed has extras)
@@ -483,12 +483,12 @@ class DiffTreeIntegrationTest(unittest.TestCase):
             self.assertIn('analyzed_only.txt', output)
             self.assertIn('metadata_diff.txt', output)
 
-            # Check for all marker types
+            # Check for marker types that should appear
             self.assertIn('[D]', output)  # Different content
             self.assertIn('[R]', output)  # Archive only
             self.assertIn('[A]', output)  # Analyzed only
             self.assertIn('[M]', output)  # Metadata differs
-            self.assertIn('[+]', output)  # Superset
+            self.assertIn('[+]', output)  # Superset marker
 
             # Directories should appear with correct markers
             self.assertIn('superset_dir', output)

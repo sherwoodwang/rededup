@@ -867,6 +867,170 @@ class DirectoryAnalysisTest(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_directory_not_identical_when_descendant_differs(self):
+        """Test that directories with identical immediate children but differing descendants are NOT identical.
+
+        This is a regression test for a bug where directory is_identical was only checking
+        immediate child names, not propagating non-identical status from descendants.
+
+        Scenario:
+        - Parent directory has same immediate children in both analyzed and archive
+        - But a deeply nested descendant file differs
+        - The parent directory should be marked as NOT identical
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+
+            # Create archive directory structure
+            archive_parent = archive_path / 'parent'
+            archive_parent.mkdir()
+            (archive_parent / 'file1.txt').write_bytes(b'content1')
+
+            # Create nested structure
+            archive_level2 = archive_parent / 'level2'
+            archive_level2.mkdir()
+            (archive_level2 / 'file2.txt').write_bytes(b'identical_content')
+
+            archive_level3 = archive_level2 / 'level3'
+            archive_level3.mkdir()
+            (archive_level3 / 'deep_file.txt').write_bytes(b'archive_version')
+
+            # Create target directory with same structure
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_parent = target_path / 'analyzed_parent'
+            target_parent.mkdir()
+            target_file1 = target_parent / 'file1.txt'
+            target_file1.write_bytes(b'content1')
+            copy_times(archive_parent / 'file1.txt', target_file1)
+
+            # Create nested structure with same names
+            target_level2 = target_parent / 'level2'
+            target_level2.mkdir()
+            target_file2 = target_level2 / 'file2.txt'
+            target_file2.write_bytes(b'identical_content')
+            copy_times(archive_level2 / 'file2.txt', target_file2)
+
+            target_level3 = target_level2 / 'level3'
+            target_level3.mkdir()
+            # This file has DIFFERENT content than archive version
+            target_deep = target_level3 / 'deep_file.txt'
+            target_deep.write_bytes(b'analyzed_version')
+            copy_times(archive_level3 / 'deep_file.txt', target_deep)
+
+            report_dir = target_parent.parent / (target_parent.name + '.report')
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_parent])
+
+            # Verify parent directory is NOT marked as identical
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found_parent_record = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if 'analyzed_parent' in str(record.path) and len(record.duplicates) > 0:
+                            comparison = record.duplicates[0]
+                            if 'parent' in str(comparison.path):
+                                found_parent_record = True
+                                # Parent should NOT be identical (descendant differs)
+                                self.assertFalse(comparison.is_identical,
+                                    "Parent directory should NOT be identical when descendant file differs")
+                                # Should also not be superset (content mismatch)
+                                self.assertFalse(comparison.is_superset,
+                                    "Parent directory should NOT be superset when descendant content differs")
+                                break
+                    except Exception as e:
+                        pass
+
+                self.assertTrue(found_parent_record, "Parent directory record not found")
+            finally:
+                db.close()
+
+    def test_nested_directory_propagates_non_identical_status(self):
+        """Test that non-identical status propagates through multiple directory levels.
+
+        This tests that if a file deep in the hierarchy differs, all ancestor directories
+        up to the root are marked as non-identical.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+
+            # Create deep nesting with files at each level to ensure matching
+            archive_l1 = archive_path / 'l1'
+            archive_l1.mkdir()
+            (archive_l1 / 'file_l1.txt').write_bytes(b'content_l1')
+
+            archive_l2 = archive_l1 / 'l2'
+            archive_l2.mkdir()
+            (archive_l2 / 'file_l2.txt').write_bytes(b'content_l2')
+
+            archive_l3 = archive_l2 / 'l3'
+            archive_l3.mkdir()
+            # Deep file with archive-specific content
+            (archive_l3 / 'deep_file.txt').write_bytes(b'archive_content')
+
+            # Create matching structure in target
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_l1 = target_path / 'analyzed_l1'
+            target_l1.mkdir()
+            target_file_l1 = target_l1 / 'file_l1.txt'
+            target_file_l1.write_bytes(b'content_l1')
+            copy_times(archive_l1 / 'file_l1.txt', target_file_l1)
+
+            target_l2 = target_l1 / 'l2'
+            target_l2.mkdir()
+            target_file_l2 = target_l2 / 'file_l2.txt'
+            target_file_l2.write_bytes(b'content_l2')
+            copy_times(archive_l2 / 'file_l2.txt', target_file_l2)
+
+            target_l3 = target_l2 / 'l3'
+            target_l3.mkdir()
+            # Different content at deepest level
+            target_deep = target_l3 / 'deep_file.txt'
+            target_deep.write_bytes(b'analyzed_content')
+            copy_times(archive_l3 / 'deep_file.txt', target_deep)
+
+            report_dir = target_path / 'analyzed_l1.report'
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_path / 'analyzed_l1'])
+
+            # Verify root directory (l1) is not identical
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found_root_record = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        # Look for the root level directory
+                        if record.path == Path('analyzed_l1') and len(record.duplicates) > 0:
+                            comparison = record.duplicates[0]
+                            if comparison.path == Path('l1'):
+                                found_root_record = True
+                                # Root should not be identical (deep descendant differs)
+                                self.assertFalse(comparison.is_identical,
+                                    "Root directory should NOT be identical when deep descendant differs")
+                                break
+                    except Exception as e:
+                        pass
+
+                self.assertTrue(found_root_record, "Root directory record not found")
+            finally:
+                db.close()
+
 
 if __name__ == '__main__':
     unittest.main()

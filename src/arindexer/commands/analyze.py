@@ -359,6 +359,7 @@ class AnalyzeProcessor:
                     comparison_rule = matching_comparison.rule
 
                 # Aggregate metadata matches from child
+                # The reducer will automatically track non-identical children
                 reducer.aggregate_from_match(matching_comparison)
 
             # Aggregate deferred item results for this candidate directory
@@ -371,7 +372,8 @@ class AnalyzeProcessor:
             reducer.aggregate_from_stat(context.stat, candidate_full_path.stat())
 
             # Create the DuplicateMatch with identity determined by set comparison
-            # non_identical: True if the item sets differ (different structure)
+            # The reducer has already accumulated non-identical/non-superset flags from children
+            # non_identical: True if the item sets differ (structural mismatch at this level)
             # non_superset: True if analyzed items are not a subset of candidate items
             comparison = reducer.create_duplicate_match(
                 candidate_dir,
@@ -537,7 +539,8 @@ class AnalyzeProcessor:
                     reducer.aggregate_from_match(subitem_results[idx])
 
             # Compute per-candidate identity/superset flags using set operations
-            # non_identical_flags[idx]: True if children sets differ
+            # The reducer has already accumulated non-identical/non-superset flags from children
+            # non_identical_flags[idx]: True if children sets differ (structural mismatch)
             # non_superset_flags[idx]: True if any analyzed child is missing from candidate
             for idx, entry in enumerate(candidate_states):
                 if entry is not None:
