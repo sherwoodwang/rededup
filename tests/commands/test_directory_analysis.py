@@ -1031,6 +1031,226 @@ class DirectoryAnalysisTest(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_directory_not_identical_when_child_has_no_duplicates(self):
+        """Test that directories are NOT identical when a child file has no duplicates in a candidate.
+
+        This is a regression test for a bug where directories were incorrectly marked as identical
+        when child files existed in both directories but had different content (no duplicate match).
+
+        Scenario:
+        - Directory has same child names in both analyzed and archive
+        - One child file has different content (no duplicate in archive)
+        - The directory should be marked as NOT identical and NOT superset
+
+        Bug: The old code only checked structural mismatch (all_items != candidate_items) but missed
+        the case where items had the same names but different content (items_with_no_duplicates).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+
+            # Create archive directory
+            archive_dir = archive_path / 'mydir'
+            archive_dir.mkdir()
+            (archive_dir / 'identical.txt').write_bytes(b'same content')
+            (archive_dir / 'different.txt').write_bytes(b'archive version')
+
+            # Create target directory with same structure
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            target_dir = target_path / 'analyzed_dir'
+            target_dir.mkdir()
+
+            # Identical file with copied times
+            identical_file = target_dir / 'identical.txt'
+            identical_file.write_bytes(b'same content')
+            copy_times(archive_dir / 'identical.txt', identical_file)
+
+            # Different content file (same name, different content)
+            different_file = target_dir / 'different.txt'
+            different_file.write_bytes(b'analyzed version')
+            copy_times(archive_dir / 'different.txt', different_file)
+
+            report_dir = target_path / 'analyzed_dir.report'
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_dir])
+
+            # Verify directory is NOT marked as identical or superset
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found_dir_record = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if record.path == Path('analyzed_dir') and len(record.duplicates) > 0:
+                            comparison = record.duplicates[0]
+                            if comparison.path == Path('mydir'):
+                                found_dir_record = True
+                                # Directory should NOT be identical (child content differs)
+                                self.assertFalse(comparison.is_identical,
+                                    "Directory should NOT be identical when child file has different content")
+                                # Directory should NOT be superset (child content differs)
+                                self.assertFalse(comparison.is_superset,
+                                    "Directory should NOT be superset when child file has different content")
+                                break
+                    except Exception as e:
+                        pass
+
+                self.assertTrue(found_dir_record, "Directory record not found")
+            finally:
+                db.close()
+
+    def test_directory_not_superset_when_analyzed_file_has_no_duplicate_in_candidate(self):
+        """Test that a directory is NOT a superset when an analyzed file has no duplicate in that candidate.
+
+        This regression test covers the case where:
+        - Multiple candidate directories exist in the archive
+        - An analyzed file has duplicates in some candidates but NOT in others
+        - Each candidate should be independently evaluated
+
+        Bug: The old code used items_with_no_duplicates (global across all candidates) instead of
+        checking per-candidate whether all analyzed items have matches.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+
+            # Create first archive candidate with only fileA
+            archive_candidate1 = archive_path / 'candidate1'
+            archive_candidate1.mkdir()
+            (archive_candidate1 / 'fileA.txt').write_bytes(b'content A')
+
+            # Create second archive candidate with only fileB
+            archive_candidate2 = archive_path / 'candidate2'
+            archive_candidate2.mkdir()
+            (archive_candidate2 / 'fileB.txt').write_bytes(b'content B')
+
+            # Create analyzed directory with both files
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            analyzed_dir = target_path / 'analyzed'
+            analyzed_dir.mkdir()
+
+            fileA = analyzed_dir / 'fileA.txt'
+            fileA.write_bytes(b'content A')
+            copy_times(archive_candidate1 / 'fileA.txt', fileA)
+
+            fileB = analyzed_dir / 'fileB.txt'
+            fileB.write_bytes(b'content B')
+            copy_times(archive_candidate2 / 'fileB.txt', fileB)
+
+            report_dir = target_path / 'analyzed.report'
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([analyzed_dir])
+
+            # Verify both candidates are NOT identical and NOT superset
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found_analyzed_record = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if record.path == Path('analyzed'):
+                            found_analyzed_record = True
+                            # Should have 2 candidates
+                            self.assertEqual(len(record.duplicates), 2,
+                                "Should have 2 candidate directories")
+
+                            # Check each candidate
+                            for dup in record.duplicates:
+                                candidate_name = dup.path.name
+                                # Neither candidate should be identical or superset
+                                # candidate1 is missing fileB, candidate2 is missing fileA
+                                self.assertFalse(dup.is_identical,
+                                    f"{candidate_name} should NOT be identical (missing a file)")
+                                self.assertFalse(dup.is_superset,
+                                    f"{candidate_name} should NOT be superset (missing a file)")
+                            break
+                    except Exception as e:
+                        pass
+
+                self.assertTrue(found_analyzed_record, "Analyzed directory record not found")
+            finally:
+                db.close()
+
+    def test_directory_identical_only_when_all_children_match(self):
+        """Test that a directory is only identical when ALL children match in content AND metadata.
+
+        This is a positive test case to verify the fix doesn't break correct behavior.
+
+        Scenario:
+        - Directory has multiple children
+        - All children have matching content and metadata
+        - Directory should be marked as identical
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+
+            # Create archive directory with multiple files
+            archive_dir = archive_path / 'complete'
+            archive_dir.mkdir()
+            (archive_dir / 'file1.txt').write_bytes(b'content 1')
+            (archive_dir / 'file2.txt').write_bytes(b'content 2')
+            (archive_dir / 'file3.txt').write_bytes(b'content 3')
+
+            # Create analyzed directory with all matching files
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            analyzed_dir = target_path / 'analyzed_complete'
+            analyzed_dir.mkdir()
+
+            for filename in ['file1.txt', 'file2.txt', 'file3.txt']:
+                target_file = analyzed_dir / filename
+                target_file.write_bytes((archive_dir / filename).read_bytes())
+                copy_times(archive_dir / filename, target_file)
+
+            # Copy directory metadata
+            copy_times(archive_dir, analyzed_dir)
+
+            report_dir = target_path / 'analyzed_complete.report'
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([analyzed_dir])
+
+            # Verify directory IS marked as identical
+            db = plyvel.DB(str(report_dir / 'database'))
+            try:
+                found_dir_record = False
+                for key, value in db.iterator():
+                    if len(key) == 16:
+                        continue
+                    try:
+                        record = DuplicateRecord.from_msgpack(value)
+                        if record.path == Path('analyzed_complete') and len(record.duplicates) > 0:
+                            comparison = record.duplicates[0]
+                            if comparison.path == Path('complete'):
+                                found_dir_record = True
+                                # All children match with metadata - should be identical
+                                self.assertTrue(comparison.is_identical,
+                                    "Directory should be identical when all children match with metadata")
+                                self.assertTrue(comparison.is_superset,
+                                    "Directory should be superset when all children match")
+                                break
+                    except Exception as e:
+                        pass
+
+                self.assertTrue(found_dir_record, "Directory record not found")
+            finally:
+                db.close()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -371,14 +371,30 @@ class AnalyzeProcessor:
             # Aggregate directory-level metadata with child metadata
             reducer.aggregate_from_stat(context.stat, candidate_full_path.stat())
 
-            # Create the DuplicateMatch with identity determined by set comparison
-            # The reducer has already accumulated non-identical/non-superset flags from children
-            # non_identical: True if the item sets differ (structural mismatch at this level)
-            # non_superset: True if analyzed items are not a subset of candidate items
+            # Determine identity and superset flags for this candidate directory
+            # Note: The reducer has already accumulated non-identical/non-superset flags from children
+            # through aggregate_from_match() calls, which propagate up the directory tree.
+            #
+            # We need to check two additional conditions at this directory level:
+            # 1. Structural match: Do both directories have the same set of child names?
+            # 2. Content match: Does every analyzed item have a matching duplicate in this candidate?
+            #
+            # Items are considered "matched" if they appear in either:
+            # - child_matches: immediate result items with content-equivalent files in this candidate
+            # - deferred_items: symlinks/special files/subdirs (handled separately, always present in both)
+            has_items_without_matches = (set(child_matches.keys()) | deferred_items) != all_items
+
+            # Determine non_identical flag (forces is_identical=False when True):
+            # - Structural mismatch: child name sets differ (all_items != candidate_items)
+            # - Content mismatch: some analyzed items lack duplicates in this candidate
+            #
+            # Determine non_superset flag (forces is_superset=False when True):
+            # - Structural mismatch: analyzed items not subset of candidate (missing items)
+            # - Content mismatch: some analyzed items lack duplicates in this candidate
             comparison = reducer.create_duplicate_match(
                 candidate_dir,
-                non_identical=all_items != candidate_items,
-                non_superset=not all_items.issubset(candidate_items)
+                non_identical=(all_items != candidate_items) or has_items_without_matches,
+                non_superset=(not all_items.issubset(candidate_items)) or has_items_without_matches
             )
 
             if comparison is not None:
