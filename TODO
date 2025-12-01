@@ -1,4 +1,3 @@
-add logs to track progress
 handle missing files in the archive
 print progress if stdout is a terminal
 graceful interrupting

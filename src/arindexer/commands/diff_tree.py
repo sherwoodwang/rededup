@@ -45,6 +45,118 @@ DIR_STATUS_MARKERS = {
 }
 
 
+class TreeOutput:
+    """Buffered output for tree rendering with cork/rewind/flush capabilities.
+
+    This allows us to defer rendering decisions until we know which children
+    are actually visible after filtering. We can cork (save position), rewind
+    (discard back to position), and flush (output to stdout).
+    """
+
+    def __init__(self) -> None:
+        """Initialize an empty tree output buffer."""
+        self._lines: list[str] = []
+        self._cork_stack: list[int] = []
+
+    def print(self, line: str) -> None:
+        """Add a line to the buffer or output immediately if not corked.
+
+        Args:
+            line: The line to add (without trailing newline)
+        """
+        if not self._cork_stack:
+            # No cork active - output immediately
+            print(line)
+        else:
+            # Cork active - buffer the line
+            self._lines.append(line)
+
+    def cork(self) -> None:
+        """Save the current position for potential rewinding.
+
+        Creates a checkpoint that can be returned to via rewind().
+        Cork points are stacked to support nested corking.
+        """
+        self._cork_stack.append(len(self._lines))
+
+    def rewind(self) -> None:
+        """Discard all output back to the most recent cork point.
+
+        Removes the cork point from the stack and truncates the buffer
+        to that position.
+
+        Raises:
+            IndexError: If there are no cork points to rewind to
+        """
+        if not self._cork_stack:
+            raise IndexError("Cannot rewind: no cork points exist")
+
+        position = self._cork_stack.pop()
+        self._lines = self._lines[:position]
+
+    def uncork(self) -> None:
+        """Remove the most recent cork point without rewinding.
+
+        Use this when you've decided to keep the output that was produced
+        after the cork point. If this was the last cork, output all buffered lines.
+
+        Raises:
+            IndexError: If there are no cork points to remove
+        """
+        if not self._cork_stack:
+            raise IndexError("Cannot uncork: no cork points exist")
+
+        self._cork_stack.pop()
+
+        # If no more corks, output all buffered lines
+        if not self._cork_stack:
+            for line in self._lines:
+                print(line)
+            self._lines.clear()
+
+    def collapse(self, n: int) -> None:
+        """Collapse the youngest n cork points into a single cork.
+
+        Removes the n-1 corks immediately before the youngest cork, effectively
+        committing the output decisions of those removed corks.
+
+        Example: collapse(3) on stack [0,1,2,3,4,5,6] removes corks at indices 4,5
+        (the n-1 corks before the youngest at index 6), resulting in [0,1,2,3,6].
+
+        If the oldest remaining cork has buffered lines before it (position > 0),
+        those lines are output to stdout and all cork positions are adjusted.
+
+        Args:
+            n: Number of youngest corks to collapse (removes n-1, keeps 1).
+               Must be >= 1 and <= len(cork_stack).
+
+        Raises:
+            ValueError: If n < 1 or n > number of corks
+        """
+        if n < 1:
+            raise ValueError("collapse(n) requires n >= 1")
+        if n > len(self._cork_stack):
+            raise ValueError(f"collapse({n}): only {len(self._cork_stack)} corks available")
+
+        # If n == 1, no corks need to be removed (we keep the youngest one)
+        if n == 1:
+            return
+
+        # Reconstruct stack: keep all corks before the removed section plus the youngest
+        self._cork_stack = self._cork_stack[:-n] + [self._cork_stack[-1]]
+
+        # If the oldest remaining cork has buffered lines before it, output them
+        first_position = self._cork_stack[0]
+        if first_position > 0:
+            # Output lines that came before the first cork
+            for line in self._lines[:first_position]:
+                print(line)
+            # Remove output lines from buffer and adjust all cork positions
+            self._lines = self._lines[first_position:]
+            for i in range(len(self._cork_stack)):
+                self._cork_stack[i] -= first_position
+
+
 class DiffTreeProcessor:
     """Processor for diff-tree operations that encapsulates state and logic."""
 
@@ -119,15 +231,33 @@ class DiffTreeProcessor:
                     # Archive contains all analyzed content plus possibly extras (directories only)
                     return NodeStatus.SUPERSET
                 else:
-                    # For files: is_superset always equals is_identical, so this means
+                    # is_identical=False and is_superset=False
+                    # For files: is_superset always equals is_identical, so this branch means
                     # content matches but metadata differs → CONTENT_MATCH
-                    # For directories: this is a partial match (some content differs) → DIFFERENT
-                    # We can distinguish by checking if duplicated_items < total_items
+                    # For directories: could be either partial match or full content match with metadata diff
+                    #
+                    # The is_superset flag properly propagates from children, so if is_superset=False
+                    # for a directory, it means either:
+                    # 1. Some analyzed content is missing from archive, OR
+                    # 2. Some descendant has differing content or metadata
+                    #
+                    # Only return CONTENT_MATCH for directories when ALL of:
+                    # - All items are present (duplicated_items == total_items)
+                    # - All content matches (check via duplicated_size or other means)
+                    # - Only metadata differs
+                    #
+                    # Since is_superset=False for directories can indicate descendant differences,
+                    # we should return DIFFERENT for directories unless we're certain it's only metadata.
+                    # For now, always return DIFFERENT for directories when is_superset=False.
                     if dup.duplicated_items < record.total_items:
-                        # Partial match - not all content is duplicated
+                        # Partial match - not all items are duplicated
+                        return NodeStatus.DIFFERENT
+                    elif record.total_items > 1:
+                        # Directory (has multiple items or subdirectories)
+                        # is_superset=False means descendant content/metadata differs
                         return NodeStatus.DIFFERENT
                     else:
-                        # All content duplicated but metadata differs
+                        # Single item (file): all content duplicated but metadata differs
                         return NodeStatus.CONTENT_MATCH
 
         # No matching duplicate found
@@ -135,6 +265,7 @@ class DiffTreeProcessor:
 
     @staticmethod
     def _print_tree_node(
+        output: TreeOutput,
         name: str,
         status: NodeStatus,
         level: int,
@@ -145,42 +276,48 @@ class DiffTreeProcessor:
         """Print a single tree node with proper indentation and status marker.
 
         Args:
+            output: TreeOutput object to write to
             name: Name of the file or directory
             status: Status of this node
             level: Depth level in the tree (0 = root)
             is_last: Whether this is the last child in its parent
-            parent_prefixes: List of booleans for each parent level, True if parent was last child
+            parent_prefixes: List of booleans for each ancestor level, True if ancestor was last child
             is_dir: Whether this node is a directory
         """
         if level == 0:
             # Root node - no prefix
             prefix = ""
         else:
-            # Build prefix from parent information
+            # Build prefix from ancestor information
+            # parent_prefixes contains one entry per ancestor level indicating if that ancestor was last
             prefix_parts = []
-            for was_last in parent_prefixes[:-1]:
+            for was_last in parent_prefixes:
                 prefix_parts.append(SPACE if was_last else VERTICAL)
+            # Add connector for this node
             prefix_parts.append(LAST_BRANCH if is_last else BRANCH)
             prefix = "".join(prefix_parts)
 
         # Use appropriate marker set based on whether this is a directory
         markers = DIR_STATUS_MARKERS if is_dir else FILE_STATUS_MARKERS
         marker = markers.get(status, "")
-        print(f"{prefix}{name}{marker}")
+        output.print(f"{prefix}{name}{marker}")
 
     def _build_and_print_tree(
         self,
+        output: TreeOutput,
         analyzed_relative: Path | None,
         archive_relative: Path | None,
         name: str,
         level: int,
         is_last: bool,
         parent_prefixes: list[bool],
-        ensure_ancestors_printed: Callable[[], None] | None = None
+        ensure_ancestors_printed: Callable[[], None] | None = None,
+        preserve_state: Callable[[], Callable[[], None]] | None = None
     ) -> bool:
         """Recursively build and print the diff tree.
 
         Args:
+            output: TreeOutput object to write to
             analyzed_relative: Relative path from analyzed_base, or None
             archive_relative: Relative path from archive_base, or None
             name: Name to display for this node
@@ -236,27 +373,30 @@ class DiffTreeProcessor:
             is_regular_file = False
             if in_analyzed and analyzed_dir is not None:
                 child_path = analyzed_dir / child_name
-                is_dir = child_path.is_dir()
-                is_regular_file = child_path.is_file()
+                if not child_path.is_symlink():
+                    is_dir = child_path.is_dir()
+                    is_regular_file = child_path.is_file()
             elif in_archive and archive_dir is not None:
                 child_path = archive_dir / child_name
-                is_dir = child_path.is_dir()
-                is_regular_file = child_path.is_file()
+                if not child_path.is_symlink():
+                    is_dir = child_path.is_dir()
+                    is_regular_file = child_path.is_file()
 
             # Skip special files (symlinks, devices, etc.) - they don't have individual records
             # They are accounted for in the parent directory's comparison
             if not is_dir and not is_regular_file:
                 continue
 
-            # Skip identical files
-            if status == NodeStatus.IDENTICAL and not is_dir:
+            # Skip identical items
+            if status == NodeStatus.IDENTICAL:
                 continue
 
-            # Skip content-only matches when hiding them
-            if self._hide_content_match and status == NodeStatus.CONTENT_MATCH and not is_dir:
+            # Skip content-match items when hiding them
+            if self._hide_content_match and status == NodeStatus.CONTENT_MATCH:
                 continue
 
-            # Apply show_filter
+            # Apply show_filter (applies to both files and directories)
+            # When filtering to one side, directories are essential for showing tree structure
             if self._show_filter == "analyzed" and status == NodeStatus.ARCHIVE_ONLY:
                 continue
             elif self._show_filter == "archive" and status == NodeStatus.ANALYZED_ONLY:
@@ -269,7 +409,9 @@ class DiffTreeProcessor:
 
         # Check if we've reached max depth
         at_max_depth = self._max_depth is not None and level + 1 >= self._max_depth
-        new_prefixes = parent_prefixes + [is_last] if level > 0 else []
+        # Prefixes for this node's children include whether this node is the last child of its parent
+        # Exception: level 0 is the invisible root and doesn't contribute to the prefix
+        new_prefixes = parent_prefixes + [is_last] if level > 0 else parent_prefixes
 
         # Get this node's status (for conditional printing at level > 0)
         dir_status: NodeStatus | None = None
@@ -282,59 +424,164 @@ class DiffTreeProcessor:
         # Create closure to ensure this node (and all ancestors) are printed
         def ensure_this_node_printed() -> None:
             nonlocal node_printed
-            if node_printed:
-                return
 
             # First, ensure ancestors are printed
             if ensure_ancestors_printed is not None:
                 ensure_ancestors_printed()
 
-            # Then print this node if it's not the root
-            if level > 0 and dir_status is not None:
-                self._print_tree_node(name, dir_status, level, is_last, parent_prefixes, is_dir=True)
+            # Then print this node if it's not the root and not already printed
+            if not node_printed and level > 0 and dir_status is not None:
+                self._print_tree_node(
+                    output, name, dir_status, level, is_last, parent_prefixes, is_dir=True)
                 node_printed = True
 
-        for idx, (child_name, analyzed_child_rel, archive_child_rel, status, is_dir) in enumerate(children_with_diffs):
-            child_is_last = (idx == len(children_with_diffs) - 1)
+        # Create state preservation function that captures the entire hierarchy
+        def preserve_this_state() -> Callable[[], None]:
+            # Capture current state
+            old_node_printed = node_printed
+
+            # Get ancestor undo function if available
+            ancestor_undo: Callable[[], None] = lambda: None
+            if preserve_state is not None:
+                ancestor_undo = preserve_state()
+
+            # Return chained undo function
+            def undo() -> None:
+                nonlocal node_printed
+                node_printed = old_node_printed
+                ancestor_undo()
+            return undo
+
+        # Single-pass loop with backtracking capability for re-rendering the last visible child
+        #
+        # Strategy:
+        # - Cork before processing each child to buffer its output
+        # - When a second visible child appears, collapse(2) commits the first while keeping second corked
+        # - At most 2 children are corked: the previous visible child and the current one
+        # - If the last visible child was rendered with is_last=False, rewind and re-render with is_last=True
+        #
+        # Cork/State operation pairs (ensuring stack balance and state consistency):
+        #
+        # Setup (every child):
+        #   cork() + preserve_state() → Creates checkpoint for both buffer and state (line 385-386)
+        #
+        # Resolution pairs (exactly one per child):
+        #   1. collapse(2) → Commits previous child, keeps current corked (line 437)
+        #      - Maintains stack balance: removes 1 cork (previous child's)
+        #      - State handling: keeps state as-is (previous child committed, current preserved)
+        #
+        #   2. rewind() + undo() → Discards output and resets state for re-render (line 367-368)
+        #      - Maintains stack balance: removes 1 cork
+        #      - State handling: resets entire hierarchy via chained undo
+        #
+        #   3. uncork() (no output) → Removes cork, no state changes (line 449)
+        #      - Maintains stack balance: removes 1 cork
+        #      - State handling: no-op (ensure_this_node_printed was never called)
+        #
+        #   4. uncork() (finalization) → Flushes all buffered output (line 375)
+        #      - Maintains stack balance: removes final cork
+        #      - State handling: no changes (state already committed)
+        #
+        # Loop variables:
+        idx = 0  # Current position in children_with_diffs list
+        last_visible_idx: int | None = None  # Index of the most recent visible child (for backtracking)
+        last_visible_was_last = False  # Whether last visible child was rendered with is_last=True
+        last_undo: Callable[[], None] = lambda: None  # Undo function to reset state hierarchy when rewinding
+        force_is_last = False  # Override is_last=True when re-rendering after backtrack
+        has_visible_child = False  # Whether we've encountered at least one visible child
+
+        while idx <= len(children_with_diffs):
+            # Post-end check: if we've gone past the last child, handle finalization
+            if idx == len(children_with_diffs):
+                if last_visible_idx is not None and not last_visible_was_last:
+                    # The last visible child was rendered with is_last=False
+                    # Need to rewind and re-render it with is_last=True
+                    output.rewind()
+                    last_undo()
+                    idx = last_visible_idx  # Move index back
+                    force_is_last = True  # Force is_last=True on re-render
+                    continue  # Re-render with corrected is_last
+                else:
+                    # Last child is correctly rendered, uncork if we had visible children
+                    if has_visible_child:
+                        output.uncork()
+                    break
+
+            # Processing a real child
+            child_name, analyzed_child_rel, archive_child_rel, status, is_dir = children_with_diffs[idx]
+
+            # Determine if this child is the last in the original list
+            child_is_last = force_is_last or (idx == len(children_with_diffs) - 1)
+
+            # Cork before processing this child and preserve state
+            output.cork()
+            saved_undo = preserve_this_state()
+
+            # Render the child
+            child_produced_output = False
 
             if is_dir:
                 if at_max_depth:
-                    # At max depth - show directory with "..."
-                    # Ensure this node is printed before showing child
+                    # At max depth - always produces output
                     ensure_this_node_printed()
 
                     self._print_tree_node(
-                        child_name, status, level + 1, child_is_last, new_prefixes + [child_is_last], is_dir=True)
+                        output, child_name, status, level + 1, child_is_last, new_prefixes, is_dir=True)
                     # Show "..." to indicate elided content
-                    elision_prefixes = new_prefixes + [child_is_last]
+                    ellipsis_parent_prefixes = new_prefixes + [child_is_last]
                     prefix_parts = []
-                    for was_last in elision_prefixes[:-1]:
+                    for was_last in ellipsis_parent_prefixes:
                         prefix_parts.append(SPACE if was_last else VERTICAL)
-                    prefix_parts.append(SPACE if child_is_last else VERTICAL)
+                    prefix_parts.append(LAST_BRANCH)
                     prefix = "".join(prefix_parts)
-                    print(f"{prefix}...")
+                    output.print(f"{prefix}...")
+
+                    child_produced_output = True
                 else:
-                    # Recursively handle directory
+                    # Recursively render directory
                     child_has_diffs = self._build_and_print_tree(
+                        output,
                         analyzed_child_rel,
                         archive_child_rel,
                         child_name,
                         level + 1,
                         child_is_last,
                         new_prefixes,
-                        ensure_this_node_printed  # Pass callback to child
+                        ensure_this_node_printed,
+                        preserve_this_state
                     )
                     if child_has_diffs:
-                        node_printed = True  # Child had diffs, so we must have been printed
+                        # Node was already printed by recursive call if needed
+                        # Just mark that this child produced output
+                        child_produced_output = True
             else:
-                # Ensure this node is printed before showing file child
+                # Render file
                 ensure_this_node_printed()
-
-                # Print file node
                 self._print_tree_node(
-                    child_name, status, level + 1, child_is_last, new_prefixes + [child_is_last], is_dir=False)
+                    output, child_name, status, level + 1, child_is_last, new_prefixes, is_dir=False)
+                child_produced_output = True
 
-        return node_printed or (level == 0 and len(children_with_diffs) > 0)
+            # Decide what to do based on whether child produced output
+            if child_produced_output:
+                # This child is visible
+                # If we had a previous visible child, collapse to commit it while keeping current corked
+                if has_visible_child and not force_is_last:
+                    output.collapse(2)
+
+                has_visible_child = True
+                last_visible_idx = idx
+                last_visible_was_last = child_is_last
+                last_undo = saved_undo
+                force_is_last = False  # Reset flag
+                idx += 1
+            else:
+                # No output - remove cork without modifying buffer or state
+                # Since the child produced no output, ensure_this_node_printed() was never called,
+                # so no state changes occurred that need to be undone.
+                output.uncork()
+                idx += 1
+
+        return node_printed or has_visible_child
 
     def run(
         self,
@@ -376,7 +623,11 @@ class DiffTreeProcessor:
         # Extract the name from the starting paths to use as the root display name
         name = analyzed_start.parts[-1] if analyzed_start.parts else "."
 
-        return self._build_and_print_tree(
+        # Create TreeOutput for buffered rendering
+        output = TreeOutput()
+
+        has_diffs = self._build_and_print_tree(
+            output,
             analyzed_start,  # Start from the specified analyzed path
             archive_start,   # Start from the specified archive path
             name,
@@ -384,6 +635,8 @@ class DiffTreeProcessor:
             is_last=True,
             parent_prefixes=[]
         )
+
+        return has_diffs
 
 
 def do_diff_tree(

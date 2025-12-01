@@ -109,8 +109,8 @@ class DiffTreeIntegrationTest(unittest.TestCase):
                     archive.analyze([target_path])
 
             output = self.capture_output(do_diff_tree, target_path, archive_dir)
-            self.assertIn('analyzed_only.txt', output)
-            self.assertIn('[A]', output)
+            # Verify complete tree structure
+            self.assertIn('└── analyzed_only.txt [A]', output)
 
     def test_file_only_in_archive(self):
         """File only in archive should show [R] marker.
@@ -142,8 +142,8 @@ class DiffTreeIntegrationTest(unittest.TestCase):
                     archive.analyze([target_path])
 
             output = self.capture_output(do_diff_tree, target_path, archive_dir)
-            self.assertIn('archive_only.txt', output)
-            self.assertIn('[R]', output)
+            # Verify complete tree structure
+            self.assertIn('└── archive_only.txt [R]', output)
 
     def test_file_different_content(self):
         """Files with different content should show [D] marker.
@@ -176,8 +176,8 @@ class DiffTreeIntegrationTest(unittest.TestCase):
                     archive.analyze([target_path])
 
             output = self.capture_output(do_diff_tree, target_path, archive_dir)
-            self.assertIn('different.txt', output)
-            self.assertIn('[D]', output)
+            # Verify complete tree structure
+            self.assertIn('└── different.txt [D]', output)
 
     def test_file_content_match(self):
         """Files with same content but different metadata should show [M] marker.
@@ -213,8 +213,8 @@ class DiffTreeIntegrationTest(unittest.TestCase):
                     archive.analyze([target_path])
 
             output = self.capture_output(do_diff_tree, target_path, archive_dir)
-            self.assertIn('content_match.txt', output)
-            self.assertIn('[M]', output)
+            # Verify complete tree structure
+            self.assertIn('└── content_match.txt [M]', output)
 
     def test_hide_content_match(self):
         """With hide_content_match=True, content-only matches should be hidden.
@@ -260,18 +260,18 @@ class DiffTreeIntegrationTest(unittest.TestCase):
                     archive.rebuild()
                     archive.analyze([target_path])
 
-            # Without hide_content_match - should show content_match.txt
+            # Without hide_content_match - should show both files
             output = self.capture_output(do_diff_tree, target_path, archive_dir)
-            self.assertIn('content_match.txt', output)
-            self.assertIn('[M]', output)
+            expected_tree = (
+                '├── content_match.txt [M]\n'
+                '└── different.txt [D]'
+            )
+            self.assertIn(expected_tree, output)
 
-            # With hide_content_match - should NOT show content_match.txt
+            # With hide_content_match - should only show different.txt
             output = self.capture_output(do_diff_tree, target_path, archive_dir, hide_content_match=True)
+            self.assertIn('└── different.txt [D]', output)
             self.assertNotIn('content_match.txt', output)
-            self.assertNotIn('[M]', output)
-            # But should still show different.txt
-            self.assertIn('different.txt', output)
-            self.assertIn('[D]', output)
 
     def test_nested_directory_differences(self):
         """Directory with extra analyzed file shows [D] marker (partial match).
@@ -309,11 +309,227 @@ class DiffTreeIntegrationTest(unittest.TestCase):
                     archive.analyze([target_path])
 
             output = self.capture_output(do_diff_tree, target_path, archive_dir)
-            self.assertIn('subdir', output)
-            self.assertIn('extra.txt', output)
-            self.assertIn('[A]', output)
-            # Check tree characters are present
-            self.assertTrue('├' in output or '└' in output)
+            # Verify complete nested tree structure
+            expected_tree = (
+                '└── subdir [D]\n'
+                '    └── extra.txt [A]'
+            )
+            self.assertIn(expected_tree, output)
+
+    def test_nested_three_level_directories(self):
+        """Three-level nested directories with identical files at each level and mixed content.
+
+        Structure:
+        - level1/
+          - identical_l1.txt (identical)
+          - level2a/
+            - identical_l2a.txt (identical)
+            - level3a/
+              - analyzed_only_1.txt [A]
+              - analyzed_only_2.txt [A]
+              - archive_only_1.txt [R]
+              - archive_only_2.txt [R]
+          - level2b/
+            - identical_l2b.txt (identical)
+            - level3b/
+              - different.txt [D]
+
+        Expected behavior:
+        - Each level's identical file should be hidden
+        - level3a should show multiple files with different markers
+        - level3b should show only the different file
+        - All directory levels should be marked [D] (different/partial)
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'mydir'
+            archive_dir.mkdir()
+
+            # Create archive structure
+            (archive_dir / 'level1').mkdir()
+            (archive_dir / 'level1' / 'identical_l1.txt').write_bytes(b'level 1 content')
+
+            # First branch - level2a -> level3a with mixed files
+            (archive_dir / 'level1' / 'level2a').mkdir()
+            (archive_dir / 'level1' / 'level2a' / 'identical_l2a.txt').write_bytes(b'level 2a content')
+            (archive_dir / 'level1' / 'level2a' / 'level3a').mkdir()
+            (archive_dir / 'level1' / 'level2a' / 'level3a' / 'archive_only_1.txt').write_bytes(b'archive 1')
+            (archive_dir / 'level1' / 'level2a' / 'level3a' / 'archive_only_2.txt').write_bytes(b'archive 2')
+
+            # Second branch - level2b -> level3b with different file
+            (archive_dir / 'level1' / 'level2b').mkdir()
+            (archive_dir / 'level1' / 'level2b' / 'identical_l2b.txt').write_bytes(b'level 2b content')
+            (archive_dir / 'level1' / 'level2b' / 'level3b').mkdir()
+            (archive_dir / 'level1' / 'level2b' / 'level3b' / 'different.txt').write_bytes(b'archive version')
+
+            # Create analyzed structure
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            (target_path / 'level1').mkdir()
+
+            # Copy identical file at level 1
+            l1_identical = target_path / 'level1' / 'identical_l1.txt'
+            l1_identical.write_bytes(b'level 1 content')
+            copy_times(archive_dir / 'level1' / 'identical_l1.txt', l1_identical)
+
+            # First branch - level2a -> level3a with mixed files
+            (target_path / 'level1' / 'level2a').mkdir()
+            l2a_identical = target_path / 'level1' / 'level2a' / 'identical_l2a.txt'
+            l2a_identical.write_bytes(b'level 2a content')
+            copy_times(archive_dir / 'level1' / 'level2a' / 'identical_l2a.txt', l2a_identical)
+            (target_path / 'level1' / 'level2a' / 'level3a').mkdir()
+            (target_path / 'level1' / 'level2a' / 'level3a' / 'analyzed_only_1.txt').write_bytes(b'analyzed 1')
+            (target_path / 'level1' / 'level2a' / 'level3a' / 'analyzed_only_2.txt').write_bytes(b'analyzed 2')
+
+            # Second branch - level2b -> level3b with different file
+            (target_path / 'level1' / 'level2b').mkdir()
+            l2b_identical = target_path / 'level1' / 'level2b' / 'identical_l2b.txt'
+            l2b_identical.write_bytes(b'level 2b content')
+            copy_times(archive_dir / 'level1' / 'level2b' / 'identical_l2b.txt', l2b_identical)
+            (target_path / 'level1' / 'level2b' / 'level3b').mkdir()
+            (target_path / 'level1' / 'level2b' / 'level3b' / 'different.txt').write_bytes(b'analyzed version')
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_path])
+
+            output = self.capture_output(do_diff_tree, target_path, archive_dir)
+
+            # Verify complete tree structure
+            expected_tree = (
+                '└── level1 [D]\n'
+                '    ├── level2a [D]\n'
+                '    │   └── level3a [D]\n'
+                '    │       ├── analyzed_only_1.txt [A]\n'
+                '    │       ├── analyzed_only_2.txt [A]\n'
+                '    │       ├── archive_only_1.txt [R]\n'
+                '    │       └── archive_only_2.txt [R]\n'
+                '    └── level2b [D]\n'
+                '        └── level3b [D]\n'
+                '            └── different.txt [D]'
+            )
+            self.assertIn(expected_tree, output)
+
+            # Verify identical files are hidden
+            self.assertNotIn('identical_l1.txt', output)
+            self.assertNotIn('identical_l2a.txt', output)
+            self.assertNotIn('identical_l2b.txt', output)
+
+    def test_nested_three_level_directories_with_hide_content_match(self):
+        """Three-level nested directories with metadata-only difference that gets hidden.
+
+        Structure:
+        - level1/
+          - identical_l1.txt (identical)
+          - level2a/
+            - identical_l2a.txt (identical)
+            - level3a/
+              - analyzed_only_1.txt [A]
+              - analyzed_only_2.txt [A]
+              - archive_only_1.txt [R]
+              - archive_only_2.txt [R]
+          - level2b/
+            - identical_l2b.txt (identical)
+            - level3b/
+              - metadata_diff.txt [M] (content match, metadata differs)
+
+        Expected behavior with --hide-content-match:
+        - metadata_diff.txt should be hidden
+        - level3b should be hidden (no visible children)
+        - level2b should be hidden (no visible children after level3b is hidden)
+        - Only level1 -> level2a -> level3a branch should be visible
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'mydir'
+            archive_dir.mkdir()
+
+            # Create archive structure
+            (archive_dir / 'level1').mkdir()
+            (archive_dir / 'level1' / 'identical_l1.txt').write_bytes(b'level 1 content')
+
+            # First branch - level2a -> level3a with mixed files
+            (archive_dir / 'level1' / 'level2a').mkdir()
+            (archive_dir / 'level1' / 'level2a' / 'identical_l2a.txt').write_bytes(b'level 2a content')
+            (archive_dir / 'level1' / 'level2a' / 'level3a').mkdir()
+            (archive_dir / 'level1' / 'level2a' / 'level3a' / 'archive_only_1.txt').write_bytes(b'archive 1')
+            (archive_dir / 'level1' / 'level2a' / 'level3a' / 'archive_only_2.txt').write_bytes(b'archive 2')
+
+            # Second branch - level2b -> level3b with metadata-only difference
+            (archive_dir / 'level1' / 'level2b').mkdir()
+            (archive_dir / 'level1' / 'level2b' / 'identical_l2b.txt').write_bytes(b'level 2b content')
+            (archive_dir / 'level1' / 'level2b' / 'level3b').mkdir()
+            (archive_dir / 'level1' / 'level2b' / 'level3b' / 'metadata_diff.txt').write_bytes(b'same content')
+
+            # Create analyzed structure
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            (target_path / 'level1').mkdir()
+
+            # Copy identical file at level 1
+            l1_identical = target_path / 'level1' / 'identical_l1.txt'
+            l1_identical.write_bytes(b'level 1 content')
+            copy_times(archive_dir / 'level1' / 'identical_l1.txt', l1_identical)
+
+            # First branch - level2a -> level3a with mixed files
+            (target_path / 'level1' / 'level2a').mkdir()
+            l2a_identical = target_path / 'level1' / 'level2a' / 'identical_l2a.txt'
+            l2a_identical.write_bytes(b'level 2a content')
+            copy_times(archive_dir / 'level1' / 'level2a' / 'identical_l2a.txt', l2a_identical)
+            (target_path / 'level1' / 'level2a' / 'level3a').mkdir()
+            (target_path / 'level1' / 'level2a' / 'level3a' / 'analyzed_only_1.txt').write_bytes(b'analyzed 1')
+            (target_path / 'level1' / 'level2a' / 'level3a' / 'analyzed_only_2.txt').write_bytes(b'analyzed 2')
+
+            # Second branch - level2b -> level3b with metadata-only difference
+            (target_path / 'level1' / 'level2b').mkdir()
+            l2b_identical = target_path / 'level1' / 'level2b' / 'identical_l2b.txt'
+            l2b_identical.write_bytes(b'level 2b content')
+            copy_times(archive_dir / 'level1' / 'level2b' / 'identical_l2b.txt', l2b_identical)
+            (target_path / 'level1' / 'level2b' / 'level3b').mkdir()
+            metadata_diff_file = target_path / 'level1' / 'level2b' / 'level3b' / 'metadata_diff.txt'
+            metadata_diff_file.write_bytes(b'same content')
+            # Tweak times to create metadata difference
+            tweak_times(metadata_diff_file, 1000000000)  # 1 second difference
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_path])
+
+            # Without hide_content_match - should show both branches
+            output = self.capture_output(do_diff_tree, target_path, archive_dir)
+            self.assertIn('level2a', output)
+            self.assertIn('level3a', output)
+            self.assertIn('level2b', output)
+            self.assertIn('level3b', output)
+            self.assertIn('metadata_diff.txt [M]', output)
+
+            # With hide_content_match - level2b/level3b branch should be hidden
+            output = self.capture_output(do_diff_tree, target_path, archive_dir, hide_content_match=True)
+
+            expected_tree = (
+                '└── level1 [D]\n'
+                '    └── level2a [D]\n'
+                '        └── level3a [D]\n'
+                '            ├── analyzed_only_1.txt [A]\n'
+                '            ├── analyzed_only_2.txt [A]\n'
+                '            ├── archive_only_1.txt [R]\n'
+                '            └── archive_only_2.txt [R]'
+            )
+            self.assertIn(expected_tree, output)
+
+            # Verify level2b branch is completely hidden
+            self.assertNotIn('level2b', output)
+            self.assertNotIn('level3b', output)
+            self.assertNotIn('metadata_diff.txt', output)
+
+            # Verify identical files are hidden
+            self.assertNotIn('identical_l1.txt', output)
+            self.assertNotIn('identical_l2a.txt', output)
+            self.assertNotIn('identical_l2b.txt', output)
 
     def test_mixed_differences(self):
         """Multiple types of differences including directories with superset/partial matches.
@@ -447,7 +663,8 @@ class DiffTreeIntegrationTest(unittest.TestCase):
             (archive_dir / 'mixed_depth_dir' / 'level3' / 'level4').mkdir()
             (archive_dir / 'mixed_depth_dir' / 'level3' / 'level4' / 'identical_level4.txt').write_bytes(b'level 4')
             (archive_dir / 'mixed_depth_dir' / 'level3' / 'level4' / 'level5').mkdir()
-            (archive_dir / 'mixed_depth_dir' / 'level3' / 'level4' / 'level5' / 'different_deep.txt').write_bytes(b'archive version')
+            (archive_dir / 'mixed_depth_dir' / 'level3' / 'level4' / 'level5' / 'different_deep.txt')\
+                .write_bytes(b'archive version')
 
             (target_path / 'mixed_depth_dir').mkdir()
             mixed_identical_2 = target_path / 'mixed_depth_dir' / 'identical_level2.txt'
@@ -462,10 +679,14 @@ class DiffTreeIntegrationTest(unittest.TestCase):
             (target_path / 'mixed_depth_dir' / 'level3' / 'level4').mkdir()
             mixed_identical_4 = target_path / 'mixed_depth_dir' / 'level3' / 'level4' / 'identical_level4.txt'
             mixed_identical_4.write_bytes(b'level 4')
-            copy_times(archive_dir / 'mixed_depth_dir' / 'level3' / 'level4' / 'identical_level4.txt', mixed_identical_4)
+            copy_times(
+                archive_dir / 'mixed_depth_dir' / 'level3' / 'level4' / 'identical_level4.txt',
+                mixed_identical_4
+            )
 
             (target_path / 'mixed_depth_dir' / 'level3' / 'level4' / 'level5').mkdir()
-            (target_path / 'mixed_depth_dir' / 'level3' / 'level4' / 'level5' / 'different_deep.txt').write_bytes(b'analyzed version')
+            (target_path / 'mixed_depth_dir' / 'level3' / 'level4' / 'level5' / 'different_deep.txt')\
+                .write_bytes(b'analyzed version')
 
             with Processor() as processor:
                 with Archive(processor, str(archive_path), create=True) as archive:
@@ -474,49 +695,30 @@ class DiffTreeIntegrationTest(unittest.TestCase):
 
             output = self.capture_output(do_diff_tree, target_path, archive_dir)
 
-            # Identical file should not appear in output
+            # Verify complete tree structure
+            expected_tree = (
+                '├── analyzed_only.txt [A]\n'
+                '├── archive_only.txt [R]\n'
+                '├── different.txt [D]\n'
+                '├── metadata_diff.txt [M]\n'
+                '├── mixed_depth_dir [D]\n'
+                '│   └── level3 [D]\n'
+                '│       └── level4 [D]\n'
+                '│           └── level5 [D]\n'
+                '│               └── different_deep.txt [D]\n'
+                '├── partial_dir [D]\n'
+                '│   └── analyzed_extra.txt [A]\n'
+                '└── superset_dir [+]\n'
+                '    └── archive_extra.txt [R]'
+            )
+            self.assertIn(expected_tree, output)
+
+            # Verify items that should NOT appear (identical files/dirs)
             self.assertNotIn('identical.txt', output)
-
-            # Files with differences should appear with correct markers
-            self.assertIn('different.txt', output)
-            self.assertIn('archive_only.txt', output)
-            self.assertIn('analyzed_only.txt', output)
-            self.assertIn('metadata_diff.txt', output)
-
-            # Check for marker types that should appear
-            self.assertIn('[D]', output)  # Different content
-            self.assertIn('[R]', output)  # Archive only
-            self.assertIn('[A]', output)  # Analyzed only
-            self.assertIn('[M]', output)  # Metadata differs
-            self.assertIn('[+]', output)  # Superset marker
-
-            # Directories should appear with correct markers
-            self.assertIn('superset_dir', output)
-            self.assertIn('partial_dir', output)
-
-            # Nested files in directories should appear
-            self.assertIn('archive_extra.txt', output)
-            self.assertIn('analyzed_extra.txt', output)
-
-            # Identical directory should be completely hidden (no diffs inside)
             self.assertNotIn('identical_dir', output)
-
-            # Items within identical_dir should not appear
-            # Note: Use word boundaries to avoid matching substrings like "different_deep.txt"
-            import re
-            self.assertIsNone(re.search(r'\bdeep\.txt\b', output))  # Nested file is identical
-            self.assertIsNone(re.search(r'\bfile\.txt\b', output))  # File is identical
-
-            # Mixed depth directory: should show parent and nested dirs with different file
-            # but NOT the identical files at each level
-            self.assertIn('mixed_depth_dir', output)
-            self.assertIn('level3', output)
-            self.assertIn('level4', output)
-            self.assertIn('level5', output)
-            self.assertNotIn('identical_level2.txt', output)  # Identical file at level 2 should be hidden
-            self.assertNotIn('identical_level3.txt', output)  # Identical file at level 3 should be hidden
-            self.assertNotIn('identical_level4.txt', output)  # Identical file at level 4 should be hidden
-            self.assertIn('different_deep.txt', output)  # Different file at level 5 should appear
+            self.assertNotIn('identical_level2.txt', output)
+            self.assertNotIn('identical_level3.txt', output)
+            self.assertNotIn('identical_level4.txt', output)
 
 
 class DiffTreeMaxDepthTest(unittest.TestCase):
@@ -573,13 +775,14 @@ class DiffTreeMaxDepthTest(unittest.TestCase):
                     archive.analyze([target_path])
 
             output = self.capture_output(do_diff_tree, target_path, archive_dir, max_depth=1)
-            # Should show subdir
-            self.assertIn('subdir', output)
-            # Should NOT show nested files
+            # Verify complete tree structure with depth limit
+            expected_tree = (
+                '└── subdir [D]\n'
+                '    └── ...'
+            )
+            self.assertIn(expected_tree, output)
             self.assertNotIn('nested.txt', output)
             self.assertNotIn('extra.txt', output)
-            # Should show "..." to indicate elision
-            self.assertIn('...', output)
 
     def test_max_depth_2(self):
         """Max depth 2 should show nested files but not deeper."""
@@ -611,15 +814,15 @@ class DiffTreeMaxDepthTest(unittest.TestCase):
                     archive.analyze([target_path])
 
             output = self.capture_output(do_diff_tree, target_path, archive_dir, max_depth=2)
-            # Should show subdir and nested.txt
-            self.assertIn('subdir', output)
-            # Should show deep directory but not its files
-            self.assertIn('deep', output)
-            # Should NOT show files in deep/
+            # Verify complete tree structure with depth limit
+            expected_tree = (
+                '└── subdir [D]\n'
+                '    └── deep [D]\n'
+                '        └── ...'
+            )
+            self.assertIn(expected_tree, output)
             self.assertNotIn('file.txt', output)
             self.assertNotIn('extra.txt', output)
-            # Should show "..." for elided content
-            self.assertIn('...', output)
 
     def test_max_depth_unlimited(self):
         """Max depth None should show all levels."""
@@ -648,10 +851,13 @@ class DiffTreeMaxDepthTest(unittest.TestCase):
 
             # Explicitly pass max_depth=None for unlimited
             output = self.capture_output(do_diff_tree, target_path, archive_dir, max_depth=None)
-            # Should show all levels
-            self.assertIn('subdir', output)
-            self.assertIn('deep', output)
-            self.assertIn('extra.txt', output)
+            # Verify complete tree structure with all levels
+            expected_tree = (
+                '└── subdir [D]\n'
+                '    └── deep [D]\n'
+                '        └── extra.txt [A]'
+            )
+            self.assertIn(expected_tree, output)
 
     def test_max_depth_default(self):
         """Default max depth (3) should limit deep structures."""
@@ -685,15 +891,16 @@ class DiffTreeMaxDepthTest(unittest.TestCase):
 
             # Use default max_depth by passing 3 explicitly
             output = self.capture_output(do_diff_tree, target_path, archive_dir, max_depth=3)
-            # Should show l1, l2, l3
-            self.assertIn('l1', output)
-            self.assertIn('l2', output)
-            self.assertIn('l3', output)
-            # Should NOT show deep files at level 4
+            # Verify complete tree structure with depth limit
+            expected_tree = (
+                '└── l1 [D]\n'
+                '    └── l2 [D]\n'
+                '        └── l3 [D]\n'
+                '            └── ...'
+            )
+            self.assertIn(expected_tree, output)
             self.assertNotIn('deep.txt', output)
             self.assertNotIn('extra.txt', output)
-            # Should show "..." for elided content
-            self.assertIn('...', output)
 
 
 class DiffTreeShowFilterTest(unittest.TestCase):
@@ -735,12 +942,12 @@ class DiffTreeShowFilterTest(unittest.TestCase):
                     archive.analyze([target_path])
 
             output = self.capture_output(do_diff_tree, target_path, archive_dir, show_filter='analyzed')
-            # Should show files in analyzed (analyzed_only, different)
-            self.assertIn('analyzed_only.txt', output)
-            self.assertIn('[A]', output)
-            self.assertIn('different.txt', output)
-            self.assertIn('[D]', output)
-            # Should NOT show archive_only
+            # Verify complete tree structure
+            expected_tree = (
+                '├── analyzed_only.txt [A]\n'
+                '└── different.txt [D]'
+            )
+            self.assertIn(expected_tree, output)
             self.assertNotIn('archive_only.txt', output)
 
     def test_show_archive_only(self):
@@ -768,12 +975,12 @@ class DiffTreeShowFilterTest(unittest.TestCase):
                     archive.analyze([target_path])
 
             output = self.capture_output(do_diff_tree, target_path, archive_dir, show_filter='archive')
-            # Should show files in archive (archive_only, different)
-            self.assertIn('archive_only.txt', output)
-            self.assertIn('[R]', output)
-            self.assertIn('different.txt', output)
-            self.assertIn('[D]', output)
-            # Should NOT show analyzed_only
+            # Verify complete tree structure
+            expected_tree = (
+                '├── archive_only.txt [R]\n'
+                '└── different.txt [D]'
+            )
+            self.assertIn(expected_tree, output)
             self.assertNotIn('analyzed_only.txt', output)
 
     def test_show_analyzed_with_hide_content_match(self):
@@ -807,12 +1014,154 @@ class DiffTreeShowFilterTest(unittest.TestCase):
                 do_diff_tree, target_path, archive_dir,
                 show_filter='analyzed', hide_content_match=True
             )
-            # Should show analyzed_only
-            self.assertIn('analyzed_only.txt', output)
-            # Should NOT show content_match (hidden)
+            # Verify complete tree structure
+            self.assertIn('└── analyzed_only.txt [A]', output)
             self.assertNotIn('content_match.txt', output)
-            # Should NOT show archive_only (filtered)
             self.assertNotIn('archive_only.txt', output)
+
+    def test_nested_directory_hidden_when_only_child_filtered(self):
+        """Nested directory should be hidden when its only different child is filtered out.
+
+        Structure:
+        - common.txt (identical, at root to enable analysis)
+        - parent_dir/
+          - child_dir/
+            - archive_only.txt [R] (only in archive, filtered out with --show analyzed)
+
+        With --show analyzed:
+        - child_dir has no children that pass the filter, so it should be hidden
+        - parent_dir has no children that pass the filter (child_dir is hidden), so it should be hidden
+        - Result: no directories shown
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'mydir'
+            archive_dir.mkdir()
+            (archive_dir / 'common.txt').write_bytes(b'content')
+            (archive_dir / 'parent_dir').mkdir()
+            (archive_dir / 'parent_dir' / 'child_dir').mkdir()
+            (archive_dir / 'parent_dir' / 'child_dir' / 'archive_only.txt').write_bytes(b'archive')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            common_file = target_path / 'common.txt'
+            common_file.write_bytes(b'content')
+            copy_times(archive_dir / 'common.txt', common_file)
+            (target_path / 'parent_dir').mkdir()
+            (target_path / 'parent_dir' / 'child_dir').mkdir()
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_path])
+
+            # With --show analyzed: archive_only.txt is filtered out
+            # So child_dir has no visible children and should be hidden
+            # So parent_dir has no visible children and should be hidden
+            output = self.capture_output(do_diff_tree, target_path, archive_dir, show_filter='analyzed')
+            self.assertNotIn('parent_dir', output)
+            self.assertNotIn('child_dir', output)
+            self.assertNotIn('archive_only.txt', output)
+
+            # With --show archive: archive_only.txt passes filter
+            # So child_dir and parent_dir should be visible
+            output = self.capture_output(do_diff_tree, target_path, archive_dir, show_filter='archive')
+            expected_tree = (
+                '└── parent_dir [D]\n'
+                '    └── child_dir [D]\n'
+                '        └── archive_only.txt [R]'
+            )
+            self.assertIn(expected_tree, output)
+
+    def test_directory_with_mixed_filtered_children(self):
+        """Directory should remain visible when one child is filtered out but another remains.
+
+        Structure:
+        - common.txt (identical, at root to enable analysis)
+        - parent_dir/
+          - analyzed_subdir/
+            - identical.txt (identical)
+            - analyzed_only.txt [A] (only in analyzed)
+          - archive_subdir/
+            - identical.txt (identical)
+            - archive_only.txt [R] (only in archive)
+
+        With --show analyzed:
+        - analyzed_only.txt passes filter, so analyzed_subdir is visible
+        - archive_only.txt is filtered out, and archive_subdir has no other visible children, so archive_subdir is
+          hidden
+        - parent_dir should still be visible because it has one visible child (analyzed_subdir)
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / 'archive'
+            archive_path.mkdir()
+            archive_dir = archive_path / 'mydir'
+            archive_dir.mkdir()
+            (archive_dir / 'common.txt').write_bytes(b'content')
+            (archive_dir / 'parent_dir').mkdir()
+
+            # archive_subdir with identical file and archive_only file
+            (archive_dir / 'parent_dir' / 'archive_subdir').mkdir()
+            (archive_dir / 'parent_dir' / 'archive_subdir' / 'identical.txt').write_bytes(b'identical content')
+            (archive_dir / 'parent_dir' / 'archive_subdir' / 'archive_only.txt').write_bytes(b'archive')
+
+            # analyzed_subdir with identical file (only in archive)
+            (archive_dir / 'parent_dir' / 'analyzed_subdir').mkdir()
+            (archive_dir / 'parent_dir' / 'analyzed_subdir' / 'identical.txt').write_bytes(b'identical content')
+
+            target_path = Path(tmpdir) / 'target'
+            target_path.mkdir()
+            common_file = target_path / 'common.txt'
+            common_file.write_bytes(b'content')
+            copy_times(archive_dir / 'common.txt', common_file)
+            (target_path / 'parent_dir').mkdir()
+
+            # analyzed_subdir with identical file and analyzed_only file
+            (target_path / 'parent_dir' / 'analyzed_subdir').mkdir()
+            analyzed_identical = target_path / 'parent_dir' / 'analyzed_subdir' / 'identical.txt'
+            analyzed_identical.write_bytes(b'identical content')
+            copy_times(archive_dir / 'parent_dir' / 'analyzed_subdir' / 'identical.txt', analyzed_identical)
+            (target_path / 'parent_dir' / 'analyzed_subdir' / 'analyzed_only.txt').write_bytes(b'analyzed')
+
+            # archive_subdir with identical file (only in analyzed)
+            (target_path / 'parent_dir' / 'archive_subdir').mkdir()
+            archive_identical = target_path / 'parent_dir' / 'archive_subdir' / 'identical.txt'
+            archive_identical.write_bytes(b'identical content')
+            copy_times(archive_dir / 'parent_dir' / 'archive_subdir' / 'identical.txt', archive_identical)
+
+            with Processor() as processor:
+                with Archive(processor, str(archive_path), create=True) as archive:
+                    archive.rebuild()
+                    archive.analyze([target_path])
+
+            # With --show analyzed: only analyzed_only.txt is visible
+            # archive_subdir is hidden (only has identical file, which is hidden), but analyzed_subdir is visible
+            output = self.capture_output(do_diff_tree, target_path, archive_dir, show_filter='analyzed')
+
+            expected_tree = (
+                '└── parent_dir [D]\n'
+                '    └── analyzed_subdir [D]\n'
+                '        └── analyzed_only.txt [A]'
+            )
+            self.assertIn(expected_tree, output)
+            self.assertNotIn('archive_only.txt', output)
+            self.assertNotIn('archive_subdir', output)
+            self.assertNotIn('identical.txt', output)
+
+            # With --show archive: only archive_only.txt is visible
+            # analyzed_subdir is hidden (only has identical file, which is hidden), but archive_subdir is visible
+            output = self.capture_output(do_diff_tree, target_path, archive_dir, show_filter='archive')
+
+            expected_tree = (
+                '└── parent_dir [D]\n'
+                '    └── archive_subdir [+]\n'
+                '        └── archive_only.txt [R]'
+            )
+            self.assertIn(expected_tree, output)
+            self.assertNotIn('analyzed_only.txt', output)
+            self.assertNotIn('analyzed_subdir', output)
+            self.assertNotIn('identical.txt', output)
 
 
 class DiffTreeValidationTest(unittest.TestCase):
