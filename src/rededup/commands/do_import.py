@@ -1,30 +1,30 @@
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from ..store.archive_store import ArchiveStore, FileSignature
+from ..index.store import IndexStore, FileSignature
 
 
 class ImportArgs(NamedTuple):
     """Arguments for import operation."""
-    source_archive_path: Path
+    source_repository_path: Path
     processor: Any  # Processor for file content comparison
 
 
 class ImportProcessor:
-    """Processes import operations from source archive to target archive."""
+    """Processes import operations from source repository to target repository."""
 
-    def __init__(self, store: ArchiveStore, args: ImportArgs):
+    def __init__(self, store: IndexStore, args: ImportArgs):
         """Initialize the import processor.
 
         Args:
-            store: Target archive store
-            args: Import arguments containing source archive path and processor
+            store: Target repository store
+            args: Import arguments containing source repository path and processor
         """
         self.store = store
         self.processor = args.processor
-        self.current_path = store.archive_path.absolute()
-        self.source_path = args.source_archive_path.absolute()
-        self.source_store: ArchiveStore | None = None
+        self.current_path = store.repository_path.absolute()
+        self.source_path = args.source_repository_path.absolute()
+        self.source_store: IndexStore | None = None
 
         # Path transformation state
         self.is_nested = False
@@ -32,17 +32,17 @@ class ImportProcessor:
         self.prefix_to_add: Path | None = None
         self.prefix_to_remove: Path | None = None
 
-    def _validate_archives(self):
-        """Validate that source and current archives have valid relationship."""
+    def _validate_repositories(self):
+        """Validate that source and current repositories have valid relationship."""
         # Validation: source and current must not be the same
         if self.source_path == self.current_path:
-            raise ValueError("Source archive cannot be the same as the current archive")
+            raise ValueError("Source repository cannot be the same as the current repository")
 
-        # Validation: source must not be inside .aridx
-        aridx_path = self.current_path / '.aridx'
+        # Validation: source must not be inside .rededup
+        aridx_path = self.current_path / '.rededup'
         try:
             self.source_path.relative_to(aridx_path)
-            raise ValueError("Source archive cannot be inside .aridx directory")
+            raise ValueError("Source repository cannot be inside .rededup directory")
         except ValueError:
             # relative_to raises ValueError if source_path is not relative to aridx_path
             # This is the expected case, so we continue
@@ -52,20 +52,20 @@ class ImportProcessor:
         """Validate that the relative path doesn't traverse through symlinks.
 
         Checks each component of the relative path to ensure it's not a symlink
-        or a followed symlink as configured in the containing archive's settings.
-        This prevents importing from archives that can't be reached by the
-        containing archive's walker.
+        or a followed symlink as configured in the containing repository's settings.
+        This prevents importing from repositories that can't be reached by the
+        containing repository's walker.
 
         Args:
-            base_path: The base archive path (containing archive)
+            base_path: The base repository path (containing repository)
             relative_path: The relative path from base to target
 
         Raises:
             ValueError: If path traverses through a symlink
         """
-        # Get symlink following configuration from the containing archive (current)
-        from ..store.archive_settings import ArchiveSettings, SETTING_FOLLOWED_SYMLINKS
-        settings = ArchiveSettings(base_path)
+        # Get symlink following configuration from the containing repository (current)
+        from ..index.settings import IndexSettings, SETTING_FOLLOWED_SYMLINKS
+        settings = IndexSettings(base_path)
         follow_list = settings.get(SETTING_FOLLOWED_SYMLINKS, [])
         symlinks_to_follow: set[Path] = set()
         if isinstance(follow_list, list):
@@ -86,8 +86,8 @@ class ImportProcessor:
                         rel = current.relative_to(base_path)
                         if rel not in symlinks_to_follow:
                             raise ValueError(
-                                f"Cannot import from archive: path traverses through symlink '{rel}' "
-                                f"which is not configured to be followed in the containing archive"
+                                f"Cannot import from repository: path traverses through symlink '{rel}' "
+                                f"which is not configured to be followed in the containing repository"
                             )
                     except ValueError as e:
                         if "not configured to be followed" not in str(e):
@@ -116,8 +116,8 @@ class ImportProcessor:
             except ValueError:
                 # Neither nested nor ancestor
                 raise ValueError(
-                    f"Source archive must be either a nested directory of the current archive "
-                    f"or an ancestor directory containing the current archive"
+                    f"Source repository must be either a nested directory of the current repository "
+                    f"or an ancestor directory containing the current repository"
                 )
 
         # Now validate the path doesn't traverse through unfollowed symlinks
@@ -130,25 +130,25 @@ class ImportProcessor:
             self.is_ancestor = True
             self.prefix_to_remove = rel_path
 
-    def _open_source_archive(self):
-        """Open the source archive store."""
-        from ..store.archive_settings import ArchiveSettings
+    def _open_source_repository(self):
+        """Open the source repository store."""
+        from ..index.settings import IndexSettings
         try:
-            source_settings = ArchiveSettings(self.source_path)
-            self.source_store = ArchiveStore(source_settings, self.source_path, create=False)
+            source_settings = IndexSettings(self.source_path)
+            self.source_store = IndexStore(source_settings, self.source_path, create=False)
         except Exception as e:
-            raise ValueError(f"Failed to open source archive: {e}")
+            raise ValueError(f"Failed to open source repository: {e}")
 
     def _check_hash_algorithm_compatibility(self):
         """Check and synchronize hash algorithms between source and target."""
         assert self.source_store is not None
-        source_hash_algo = self.source_store.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
-        current_hash_algo = self.store.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
+        source_hash_algo = self.source_store.read_manifest(IndexStore.MANIFEST_HASH_ALGORITHM)
+        current_hash_algo = self.store.read_manifest(IndexStore.MANIFEST_HASH_ALGORITHM)
 
         if current_hash_algo is None:
-            # Current archive hasn't been built yet, adopt source's algorithm
+            # Current repository hasn't been built yet, adopt source's algorithm
             if source_hash_algo is not None:
-                self.store.write_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM, source_hash_algo)
+                self.store.write_manifest(IndexStore.MANIFEST_HASH_ALGORITHM, source_hash_algo)
         elif source_hash_algo != current_hash_algo:
             raise ValueError(
                 f"Hash algorithm mismatch: source uses {source_hash_algo}, "
@@ -156,10 +156,10 @@ class ImportProcessor:
             )
 
     def _transform_path(self, path: Path) -> Path | None:
-        """Transform a path based on the relationship between archives.
+        """Transform a path based on the relationship between repositories.
 
         Args:
-            path: Original path from source archive
+            path: Original path from source repository
 
         Returns:
             Transformed path, or None if path should be excluded
@@ -172,11 +172,11 @@ class ImportProcessor:
             # Source is ancestor: filter and strip prefix
             assert self.prefix_to_remove is not None
             try:
-                # Check if path is under the current archive's scope
+                # Check if path is under the current repository's scope
                 relative = path.relative_to(self.prefix_to_remove)
                 return relative
             except ValueError:
-                # Path is outside current archive's scope, exclude it
+                # Path is outside current repository's scope, exclude it
                 return None
         else:
             # Should not happen due to validation, but return as-is
@@ -192,14 +192,14 @@ class ImportProcessor:
         Args:
             digest: The content digest to process
         """
-        # Get all existing EC classes in current archive for this digest
+        # Get all existing EC classes in current repository for this digest
         existing_ec_classes = list(self.store.list_content_equivalent_classes(digest))
         next_available_ec_id = max((ec_id for ec_id, _ in existing_ec_classes), default=-1) + 1
 
         # Import each source EC class
         assert self.source_store is not None
         for source_ec_id, source_paths in self.source_store.list_content_equivalent_classes(digest):
-            # Transform paths from source to current archive's namespace
+            # Transform paths from source to current repository's namespace
             transformed_paths = self._transform_paths(source_paths)
 
             if not transformed_paths:
@@ -278,7 +278,7 @@ class ImportProcessor:
         """Get file signature from source store.
 
         Args:
-            file_path: Path to file in source archive
+            file_path: Path to file in source repository
 
         Returns:
             File signature or None if not found
@@ -293,7 +293,7 @@ class ImportProcessor:
         """Transform multiple paths, filtering out excluded paths.
 
         Args:
-            paths: List of paths from source archive
+            paths: List of paths from source repository
 
         Returns:
             List of transformed paths (excludes None results)
@@ -310,14 +310,14 @@ class ImportProcessor:
 
         Strategy:
         - Outer loop scans file signatures from source
-        - When a digest is encountered for the first time (not yet in target archive),
+        - When a digest is encountered for the first time (not yet in target repository),
           process all its EC classes and import file signatures for files in those EC classes
-        - Skip files whose signatures are already present in the target archive
+        - Skip files whose signatures are already present in the target repository
           (presence indicates the digest has already been processed)
         """
-        self._validate_archives()
+        self._validate_repositories()
         self._determine_relationship()
-        self._open_source_archive()
+        self._open_source_repository()
 
         try:
             self._check_hash_algorithm_compatibility()
@@ -333,7 +333,7 @@ class ImportProcessor:
                     # File is outside scope, skip
                     continue
 
-                # Check if this file is already registered in target archive
+                # Check if this file is already registered in target repository
                 # If it is, the digest has already been processed
                 existing_signature = None
                 for path, sig in self.store.list_registered_files():
@@ -354,7 +354,7 @@ class ImportProcessor:
                 self.source_store.close()
 
 
-async def do_import(store: ArchiveStore, args: ImportArgs):
-    """Import index entries from another archive."""
+async def do_import(store: IndexStore, args: ImportArgs):
+    """Import index entries from another repository."""
     processor = ImportProcessor(store, args)
     await processor.process()

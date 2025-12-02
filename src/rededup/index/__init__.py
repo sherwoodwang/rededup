@@ -1,1 +1,1 @@
-"""Storage layer modules for archive indexer."""
+"""Storage layer modules for repository indexer."""

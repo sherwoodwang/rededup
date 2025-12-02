@@ -8,8 +8,8 @@ This module tests the DescribeOptions class and sorting/filtering functionality:
 import unittest
 from pathlib import Path
 
-from arindexer.commands.describe import DescribeOptions, format_size
-from arindexer.report.duplicate_match import DuplicateMatch
+from rededup.commands.describe import DescribeOptions, format_size
+from rededup.report.duplicate_match import DuplicateMatch
 
 
 class DescribeOptionsTest(unittest.TestCase):
@@ -53,28 +53,28 @@ class DuplicateSortingTest(unittest.TestCase):
         self.duplicates = [
             # Large size, many items, partial match, long path
             DuplicateMatch(
-                Path('archive/very/long/path/to/file1.txt'),
+                Path('repository/very/long/path/to/file1.txt'),
                 mtime_match=False, atime_match=True, ctime_match=True, mode_match=True,
                 duplicated_size=1000000, duplicated_items=10,
                 is_identical=False, is_superset=False
             ),
             # Medium size, few items, superset, medium path
             DuplicateMatch(
-                Path('archive/medium/file2.txt'),
+                Path('repository/medium/file2.txt'),
                 mtime_match=True, atime_match=True, ctime_match=True, mode_match=False,
                 duplicated_size=500000, duplicated_items=5,
                 is_identical=False, is_superset=True
             ),
             # Small size, few items, identical, short path
             DuplicateMatch(
-                Path('archive/file3.txt'),
+                Path('repository/file3.txt'),
                 mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
                 duplicated_size=100000, duplicated_items=3,
                 is_identical=True, is_superset=True
             ),
             # Large size, many items, identical, medium path
             DuplicateMatch(
-                Path('archive/path/file4.txt'),
+                Path('repository/path/file4.txt'),
                 mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
                 duplicated_size=1000000, duplicated_items=10,
                 is_identical=True, is_superset=True
@@ -93,12 +93,12 @@ class DuplicateSortingTest(unittest.TestCase):
         sorted_dups = sorted(self.duplicates, key=sort_key)
 
         # First should be large size + identical + shorter path
-        self.assertEqual(Path('archive/path/file4.txt'), sorted_dups[0].path)
+        self.assertEqual(Path('repository/path/file4.txt'), sorted_dups[0].path)
         self.assertEqual(1000000, sorted_dups[0].duplicated_size)
         self.assertTrue(sorted_dups[0].is_identical)
 
         # Second should be large size + partial match
-        self.assertEqual(Path('archive/very/long/path/to/file1.txt'), sorted_dups[1].path)
+        self.assertEqual(Path('repository/very/long/path/to/file1.txt'), sorted_dups[1].path)
         self.assertEqual(1000000, sorted_dups[1].duplicated_size)
         self.assertFalse(sorted_dups[1].is_identical)
 
@@ -148,7 +148,7 @@ class DuplicateSortingTest(unittest.TestCase):
         sorted_dups = sorted(self.duplicates, key=sort_key)
 
         # Shortest path should be first
-        self.assertEqual(Path('archive/file3.txt'), sorted_dups[0].path)
+        self.assertEqual(Path('repository/file3.txt'), sorted_dups[0].path)
 
         # Verify paths are in ascending length order
         for i in range(len(sorted_dups) - 1):

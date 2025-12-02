@@ -2,7 +2,7 @@
 import unittest
 from pathlib import Path
 
-from arindexer.report.duplicate_match import DuplicateMatch, DuplicateMatchRule
+from rededup.report.duplicate_match import DuplicateMatch, DuplicateMatchRule
 
 
 class DuplicateMatchTest(unittest.TestCase):
@@ -12,7 +12,7 @@ class DuplicateMatchTest(unittest.TestCase):
         """Create DuplicateMatch with all fields."""
         rule = DuplicateMatchRule(include_atime=True)
         comparison = DuplicateMatch(
-            Path('archive/file.txt'),
+            Path('repository/file.txt'),
             mtime_match=True,
             atime_match=False,
             ctime_match=True,
@@ -26,7 +26,7 @@ class DuplicateMatchTest(unittest.TestCase):
             rule=rule
         )
 
-        self.assertEqual(Path('archive/file.txt'), comparison.path)
+        self.assertEqual(Path('repository/file.txt'), comparison.path)
         self.assertTrue(comparison.mtime_match)
         self.assertFalse(comparison.atime_match)
         self.assertTrue(comparison.ctime_match)

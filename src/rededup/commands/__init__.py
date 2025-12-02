@@ -1,1 +1,1 @@
-"""Command implementation modules for archive indexer."""
+"""Command implementation modules for repository indexer."""

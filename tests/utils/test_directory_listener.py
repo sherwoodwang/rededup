@@ -6,13 +6,13 @@ import unittest
 from asyncio import TaskGroup
 from pathlib import Path
 
-from arindexer.utils.directory_listener import (
+from rededup.utils.directory_listener import (
     DirectoryListenerCoordinator,
     DirectoryListener,
     ChildTaskException,
     _DirectoryListenerKey
 )
-from arindexer.utils.walker import walk_with_policy, WalkPolicy
+from rededup.utils.walker import walk_with_policy, WalkPolicy
 
 
 class MockFileContext:

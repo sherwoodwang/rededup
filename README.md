@@ -1,4 +1,4 @@
-# Archive Indexer
+# Rededup
 
 A utility to create an index for a collection of files with hash functions and deduplicate another collection of files
 against the indexed one.
@@ -7,8 +7,8 @@ against the indexed one.
 
 ### Global Options
 
-- `--archive ARCHIVE_PATH`: Specify the path to the archive directory. If not provided, the tool will use the
-  `ARINDEXER_ARCHIVE` environment variable or search for an archive starting from the current directory and moving up
+- `--repository REPOSITORY_PATH`: Specify the path to the repository directory. If not provided, the tool will use the
+  `REDEDUP_REPOSITORY` environment variable or search for a repository starting from the current directory and moving up
   the directory tree.
 - `--verbose`: Enable verbose output for more detailed information during operations.
 
@@ -16,70 +16,70 @@ against the indexed one.
 
 #### `rebuild`
 
-Completely rebuilds the archive index from scratch.
+Completely rebuilds the repository index from scratch.
 
 ```bash
-arindexer rebuild
-arindexer --archive /path/to/archive rebuild
+rededup rebuild
+rededup --repository /path/to/repository rebuild
 ```
 
 #### `refresh`
 
-Refreshes the archive index by updating it with any changes.
+Refreshes the repository index by updating it with any changes.
 
 ```bash
-arindexer refresh
-arindexer --archive /path/to/archive refresh
+rededup refresh
+rededup --repository /path/to/repository refresh
 ```
 
 #### `find-duplicates [FILES_OR_DIRECTORIES...]`
 
-Finds duplicate files in the specified files or directories against the archive.
+Finds duplicate files in the specified files or directories against the repository.
 
 **Options:**
 - `--ignore TYPES` - Comma-separated list of metadata difference types to ignore when comparing files
 - `--show-possible-duplicates` - Show content-wise duplicates that might be actual duplicates
 
 ```bash
-arindexer find-duplicates /path/to/check
-arindexer find-duplicates --ignore size,mtime /path/to/check
-arindexer find-duplicates --show-possible-duplicates /path/to/check
+rededup find-duplicates /path/to/check
+rededup find-duplicates --ignore size,mtime /path/to/check
+rededup find-duplicates --show-possible-duplicates /path/to/check
 ```
 
 #### `inspect`
 
-Inspects and displays information about the archive records.
+Inspects and displays information about the repository records.
 
 ```bash
-arindexer inspect
+rededup inspect
 ```
 
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `ARINDEXER_ARCHIVE` | Default archive path when `--archive` is not specified |
-| `ARINDEXER_PROFILE` | Enable profiling and specify output directory for cProfile data. When set, creates timestamped subdirectories containing `.prof` files for the main process and any worker processes. |
+| `REDEDUP_REPOSITORY` | Default repository path when `--repository` is not specified |
+| `REDEDUP_PROFILE` | Enable profiling and specify output directory for cProfile data. When set, creates timestamped subdirectories containing `.prof` files for the main process and any worker processes. |
 
 ### Examples
 
 ```bash
-# Create or rebuild an archive in the current directory
-arindexer rebuild
+# Create or rebuild a repository index in the current directory
+rededup rebuild
 
 # Find duplicates in a specific directory
-arindexer find-duplicates /home/user/documents
+rededup find-duplicates /home/user/documents
 
 # Find duplicates ignoring file modification time differences
-arindexer find-duplicates --ignore mtime /home/user/documents
+rededup find-duplicates --ignore mtime /home/user/documents
 
-# Use a specific archive location
-arindexer --archive /mnt/backup/archive find-duplicates /home/user/documents
+# Use a specific repository location
+rededup --repository /mnt/backup/repository find-duplicates /home/user/documents
 ```
 
 ## Index Format
 
-The Archive Indexer creates a `.aridx` directory in the archive root containing a LevelDB database that stores the
+Rededup creates a `.rededup` directory in the repository root containing a LevelDB database that stores the
 index. The index uses three main data structures:
 
 ### Database Structure

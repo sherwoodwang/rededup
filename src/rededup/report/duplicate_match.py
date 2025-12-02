@@ -106,10 +106,10 @@ class DuplicateMatchRule:
 
 
 class DuplicateMatch:
-    """A duplicate found in the archive with metadata comparison results.
+    """A duplicate found in the repository with metadata comparison results.
 
     Attributes:
-        path: Path to the duplicate file or directory in the archive, relative to archive root.
+        path: Path to the duplicate file or directory in the repository, relative to repository root.
 
         mtime_match: Whether modification times match exactly (nanosecond precision).
                      For files: compares the file's mtime directly.
@@ -141,11 +141,11 @@ class DuplicateMatch:
                      For directories: True only if both the directory's group AND all child files'
                      groups match. False if ANY child file has group_match=False.
 
-        duplicated_size: Total size in bytes of files within this specific archive path
+        duplicated_size: Total size in bytes of files within this specific repository path
                         that have content-equivalent files in the analyzed path.
                         For files: the file size if content matches.
                         For directories: sum of all child file sizes that are content-equivalent.
-                        NOTE: When a file in the analyzed path has multiple content-equivalent files in the archive,
+                        NOTE: When a file in the analyzed path has multiple content-equivalent files in the repository,
                         each DuplicateMatch counts that file's size independently.
 
         duplicated_items: Count of individual items that are duplicated.
@@ -311,7 +311,7 @@ class MetadataMatchReducer:
         """Create a DuplicateMatch using aggregated metadata and calculate identity/superset flags.
 
         Args:
-            path: Path to the duplicate (relative to archive root)
+            path: Path to the duplicate (relative to repository root)
             non_identical: If True, forces is_identical to False (structural mismatch at this level).
                           For directories, this is True when the set of immediate child names differs.
                           For files, this is typically False (files are compared by content).

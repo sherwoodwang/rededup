@@ -1,1 +1,1 @@
-"""Utility modules for archive indexer."""
+"""Utility modules for repository indexer."""

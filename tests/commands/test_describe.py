@@ -6,11 +6,11 @@ import unittest
 from pathlib import Path
 from typing import NamedTuple
 
-from arindexer import Archive
-from arindexer.commands.describe import DescribeFormatter, SortableRowData
-from arindexer.report.path import get_report_directory_path
-from arindexer.report.store import ReportStore
-from arindexer.utils.processor import Processor
+from rededup import Repository
+from rededup.commands.describe import DescribeFormatter, SortableRowData
+from rededup.report.path import get_report_directory_path
+from rededup.report.store import ReportStore
+from rededup.utils.processor import Processor
 
 from ..test_utils import copy_times
 
@@ -37,23 +37,23 @@ class DescribeIntegrationTest(unittest.TestCase):
     """Integration tests for describe functionality."""
 
     def test_describe_file_with_duplicates(self):
-        """Test describing a file that has duplicates in archive."""
+        """Test describing a file that has duplicates in repository."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_file = archive_path / 'original.txt'
-            archive_file.write_bytes(b'test content')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_file = repository_path / 'original.txt'
+            repository_file.write_bytes(b'test content')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
             target_file = target_path / 'duplicate.txt'
             target_file.write_bytes(b'test content')
-            copy_times(archive_file, target_file)
+            copy_times(repository_file, target_file)
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_path])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_path])
 
             # Use ReportStore to verify the report
             report_dir = get_report_directory_path(target_path)
@@ -70,12 +70,12 @@ class DescribeIntegrationTest(unittest.TestCase):
     def test_describe_directory_with_children(self):
         """Test describing a directory with child files."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'mydir'
-            archive_dir.mkdir()
-            (archive_dir / 'file1.txt').write_bytes(b'content1')
-            (archive_dir / 'file2.txt').write_bytes(b'content2')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'mydir'
+            repository_dir.mkdir()
+            (repository_dir / 'file1.txt').write_bytes(b'content1')
+            (repository_dir / 'file2.txt').write_bytes(b'content2')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -83,15 +83,15 @@ class DescribeIntegrationTest(unittest.TestCase):
             target_dir.mkdir()
             file1 = target_dir / 'file1.txt'
             file1.write_bytes(b'content1')
-            copy_times(archive_dir / 'file1.txt', file1)
+            copy_times(repository_dir / 'file1.txt', file1)
             file2 = target_dir / 'file2.txt'
             file2.write_bytes(b'content2')
-            copy_times(archive_dir / 'file2.txt', file2)
+            copy_times(repository_dir / 'file2.txt', file2)
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Use ReportStore to verify directory report
             report_dir = get_report_directory_path(target_dir)

@@ -1,4 +1,4 @@
-"""Shared test utilities for archive-indexer tests."""
+"""Shared test utilities for rededup tests."""
 import os
 from pathlib import Path
 

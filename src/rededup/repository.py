@@ -5,49 +5,49 @@ from pathlib import Path
 from typing import Iterator, Callable, Awaitable
 
 from .utils.processor import Processor
-from .store.archive_store import ArchiveStore
-from .store.archive_settings import ArchiveSettings
+from .index.store import IndexStore
+from .index.settings import IndexSettings
 from .commands.rebuild_refresh import do_rebuild, do_refresh, RebuildRefreshArgs
 from .commands.do_import import do_import, ImportArgs
 from .commands.analyze import do_analyze, AnalyzeArgs
 from .report.duplicate_match import DuplicateMatchRule
 
 
-class Archive:
-    """High-level workflow orchestration layer for archive file indexing and deduplication.
+class Repository:
+    """High-level workflow orchestration layer for repository file indexing and deduplication.
 
-    This class represents the archive from a business operations perspective, providing
-    complete workflows for common archive management tasks:
+    This class represents the repository from a business operations perspective, providing
+    complete workflows for common repository management tasks:
     - rebuild(): Full index reconstruction from scratch
     - refresh(): Incremental updates based on file system changes
 
-    Archive operates at the workflow level, coordinating multiple ArchiveStore operations,
+    Repository operates at the workflow level, coordinating multiple IndexStore operations,
     managing concurrency with async/await patterns, handling error cases, and implementing
     business logic like content equivalent class assignment and duplicate reporting.
 
-    Contrast with ArchiveStore class, which provides low-level data operations for direct
-    storage access without workflow orchestration. Archive composes ArchiveStore primitives
+    Contrast with IndexStore class, which provides low-level data operations for direct
+    storage access without workflow orchestration. Repository composes IndexStore primitives
     into meaningful, user-facing operations with proper sequencing and error handling.
     """
 
     def __init__(self, processor: Processor, path: str | os.PathLike, create: bool = False):
-        """Initialize archive with LevelDB index at path/.aridx/database.
+        """Initialize repository with LevelDB index at path/.rededup/index.
 
         Args:
             processor: File processing backend for hashing and comparison
-            path: Archive root directory path
-            create: Create .aridx directory if missing
+            path: Repository root directory path
+            create: Create .rededup directory if missing
 
         Raises:
-            FileNotFoundError: Archive directory does not exist
-            NotADirectoryError: Archive path is not a directory
-            ArchiveIndexNotFound: Index directory missing and create=False
+            FileNotFoundError: Repository directory does not exist
+            NotADirectoryError: Repository path is not a directory
+            IndexNotFound: Index directory missing and create=False
         """
-        archive_path = Path(path)
+        repository_path = Path(path)
 
-        settings = ArchiveSettings(archive_path)
+        settings = IndexSettings(repository_path)
 
-        self._store = ArchiveStore(settings, archive_path, create)
+        self._store = IndexStore(settings, repository_path, create)
         self._processor = processor
         self._settings = settings
 
@@ -61,7 +61,7 @@ class Archive:
         self.close()
 
     def __enter__(self):
-        """Context manager entry, validates archive is still alive."""
+        """Context manager entry, validates repository is still alive."""
         self._store.__enter__()
         return self
 
@@ -70,12 +70,12 @@ class Archive:
         self._store.__exit__(exc_type, exc_val, exc_tb)
 
     def close(self):
-        """Close LevelDB database and mark archive as closed."""
+        """Close LevelDB database and mark repository as closed."""
         if hasattr(self, '_store'):
             self._store.close()
 
     def configure_logging_from_settings(self) -> bool:
-        """Configure logging from archive settings if a log path is specified.
+        """Configure logging from repository settings if a log path is specified.
 
         Preserves the current logging level if already configured (e.g., from CLI arguments).
         Only changes the log file path.
@@ -105,7 +105,7 @@ class Archive:
         """Completely rebuild index by truncating database and re-scanning all files.
 
         Sets hash algorithm to SHA-256, removes all existing entries, and performs
-        full archive traversal to generate new signatures and equivalent classes.
+        full repository traversal to generate new signatures and equivalent classes.
         """
         asyncio.run(do_rebuild(
             self._store,
@@ -130,32 +130,32 @@ class Archive:
             )
         ))
 
-    def import_index(self, source_archive_path: str | os.PathLike):
-        """Import index entries from another archive with path transformation.
+    def import_index(self, source_repository_path: str | os.PathLike):
+        """Import index entries from another repository with path transformation.
 
-        If the source archive is a nested directory of the current archive,
+        If the source repository is a nested directory of the current repository,
         entries are imported with the relative path prepended as a prefix.
-        If the source archive is an ancestor directory of the current archive,
-        only entries within the current archive's scope are imported with
+        If the source repository is an ancestor directory of the current repository,
+        only entries within the current repository's scope are imported with
         their prefix removed.
 
         Args:
-            source_archive_path: Path to source archive directory
+            source_repository_path: Path to source repository directory
 
         Raises:
-            ValueError: If source archive is invalid, same as current, or
+            ValueError: If source repository is invalid, same as current, or
                        relationship is neither nested nor ancestor
         """
         asyncio.run(do_import(
             self._store,
-            ImportArgs(Path(source_archive_path), self._processor)
+            ImportArgs(Path(source_repository_path), self._processor)
         ))
 
     def analyze(self, input_paths: list[Path], comparison_rule: DuplicateMatchRule | None = None):
-        """Generate analysis reports for input paths against the archive.
+        """Generate analysis reports for input paths against the repository.
 
         Creates a .report directory for each input path containing:
-        - manifest.json: Report metadata including archive path, ID, and timestamp
+        - manifest.json: Report metadata including repository path, ID, and timestamp
         - .dup files: Lists of duplicate file paths for each analyzed file
 
         Args:
@@ -164,16 +164,16 @@ class Archive:
                            If None, uses default rule (atime excluded, all else included).
 
         Each input path gets its own report directory (e.g., path/to/file.report)
-        containing the analysis results and a manifest that references this archive
+        containing the analysis results and a manifest that references this repository
         with a validation identifier.
 
         Raises:
-            RuntimeError: If archive ID is not set (archive needs refresh/rebuild)
+            RuntimeError: If repository ID is not set (repository needs refresh/rebuild)
             FileExistsError: If a file exists at the report directory path
         """
-        archive_id = self._store.get_archive_id()
-        if archive_id is None:
-            raise RuntimeError("Archive ID not set. Please rebuild or refresh the archive first.")
+        repository_id = self._store.get_repository_id()
+        if repository_id is None:
+            raise RuntimeError("Repository ID not set. Please rebuild or refresh the repository first.")
 
         if comparison_rule is None:
             comparison_rule = DuplicateMatchRule()  # Use default rule (atime excluded)
@@ -184,8 +184,8 @@ class Archive:
                 self._processor,
                 input_paths,
                 self._get_hash_algorithm(),
-                archive_id,
-                self._store.archive_path,
+                repository_id,
+                self._store.repository_path,
                 comparison_rule
             )
         ))
@@ -213,7 +213,7 @@ class Archive:
             RuntimeError: If unknown hash algorithm specified
         """
         if hash_algorithm is None:
-            hash_algorithm = self._store.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
+            hash_algorithm = self._store.read_manifest(IndexStore.MANIFEST_HASH_ALGORITHM)
 
             if hash_algorithm is None:
                 raise RuntimeError("The index hasn't been build")

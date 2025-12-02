@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer.report.duplicate_match import DuplicateMatch
-from arindexer.report.store import (
+from rededup.report.duplicate_match import DuplicateMatch
+from rededup.report.store import (
     DuplicateRecord,
     ReportManifest,
     ReportStore,
@@ -25,7 +25,7 @@ class ReportStoreTest(unittest.TestCase):
             try:
                 # Create and write a record
                 comparison = DuplicateMatch(
-                    Path('archive/file.txt'),
+                    Path('repository/file.txt'),
                     mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
                     duplicated_size=100, duplicated_items=1,
                     is_identical=True, is_superset=True
@@ -51,7 +51,7 @@ class ReportStoreTest(unittest.TestCase):
                 self.assertEqual(100, retrieved.duplicated_size)
                 self.assertEqual(1, len(retrieved.duplicates))
                 comp = retrieved.duplicates[0]
-                self.assertEqual(Path('archive/file.txt'), comp.path)
+                self.assertEqual(Path('repository/file.txt'), comp.path)
                 self.assertTrue(comp.is_identical)
                 self.assertEqual(1, comp.duplicated_items)
 
@@ -66,7 +66,7 @@ class ReportStoreTest(unittest.TestCase):
             store.open_database(create_if_missing=True)
             try:
                 comparison = DuplicateMatch(
-                    Path('archive/file.txt'),
+                    Path('repository/file.txt'),
                     mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
                     duplicated_size=100, duplicated_items=1,
                     is_identical=True, is_superset=True
@@ -93,7 +93,7 @@ class ReportStoreTest(unittest.TestCase):
                 self.assertEqual(1, len(retrieved.duplicates))
 
                 comp = retrieved.duplicates[0]
-                self.assertEqual(Path('archive/file.txt'), comp.path)
+                self.assertEqual(Path('repository/file.txt'), comp.path)
                 self.assertTrue(comp.is_identical)
                 self.assertEqual(1, comp.duplicated_items)
 
@@ -118,8 +118,8 @@ class ReportStoreTest(unittest.TestCase):
 
             # Write manifest
             manifest = ReportManifest(
-                archive_path='/path/to/archive',
-                archive_id='test-archive-id',
+                repository_path='/path/to/repository',
+                repository_id='test-repository-id',
                 timestamp='2024-01-01T00:00:00'
             )
 
@@ -131,8 +131,8 @@ class ReportStoreTest(unittest.TestCase):
             store2 = ReportStore(report_dir, Path('.'))
             retrieved = store2.read_manifest()
 
-            self.assertEqual('/path/to/archive', retrieved.archive_path)
-            self.assertEqual('test-archive-id', retrieved.archive_id)
+            self.assertEqual('/path/to/repository', retrieved.repository_path)
+            self.assertEqual('test-repository-id', retrieved.repository_id)
             self.assertEqual('2024-01-01T00:00:00', retrieved.timestamp)
 
     def test_update_existing_record(self):
@@ -205,14 +205,14 @@ class ReportStoreTest(unittest.TestCase):
                     self.assertEqual(Path(f'file{i}.txt'), record.path)
 
     def test_validate_report(self):
-        """Test validating report against archive ID."""
+        """Test validating report against repository ID."""
         with tempfile.TemporaryDirectory() as tmpdir:
             report_dir = Path(tmpdir) / '.report'
 
             # Write manifest
             manifest = ReportManifest(
-                archive_path='/path/to/archive',
-                archive_id='test-archive-id',
+                repository_path='/path/to/repository',
+                repository_id='test-repository-id',
                 timestamp='2024-01-01T00:00:00'
             )
 
@@ -221,10 +221,10 @@ class ReportStoreTest(unittest.TestCase):
             store.write_manifest(manifest)
 
             # Validate with correct ID
-            self.assertTrue(store.validate_report('test-archive-id'))
+            self.assertTrue(store.validate_report('test-repository-id'))
 
             # Validate with incorrect ID
-            self.assertFalse(store.validate_report('wrong-archive-id'))
+            self.assertFalse(store.validate_report('wrong-repository-id'))
 
 
 if __name__ == '__main__':

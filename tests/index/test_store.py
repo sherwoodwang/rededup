@@ -1,6 +1,6 @@
 """Tests for equivalence class storage methods with controlled hash collisions.
 
-This module tests the hash-based path storage in ArchiveStore, specifically:
+This module tests the hash-based path storage in IndexStore, specifically:
 - list_content_equivalent_classes
 - add_paths_to_equivalent_class
 - remove_paths_from_equivalent_class
@@ -12,12 +12,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer.store.archive_settings import ArchiveSettings
-from arindexer.store.archive_store import ArchiveStore
+from rededup.index.settings import IndexSettings
+from rededup.index.store import IndexStore
 
 
-class InterceptedArchiveStore(ArchiveStore):
-    """ArchiveStore subclass with controllable hash function for testing."""
+class InterceptedIndexStore(IndexStore):
+    """IndexStore subclass with controllable hash function for testing."""
 
     # Class-level hash mapping for deterministic testing
     # Maps path string to hash value
@@ -29,8 +29,8 @@ class InterceptedArchiveStore(ArchiveStore):
         path_str = '/'.join(str(part) for part in path.parts)
 
         # Use mapping if available, otherwise fall back to sequential assignment
-        if path_str in InterceptedArchiveStore.hash_mapping:
-            return InterceptedArchiveStore.hash_mapping[path_str]
+        if path_str in InterceptedIndexStore.hash_mapping:
+            return InterceptedIndexStore.hash_mapping[path_str]
 
         # Default: return a simple hash based on path length for predictability
         return len(path_str) % 100
@@ -40,17 +40,17 @@ class TestEquivalenceClassStorage(unittest.TestCase):
     """Test equivalence class storage methods with controlled hash collisions."""
 
     def setUp(self):
-        """Create temporary archive for testing."""
+        """Create temporary repository for testing."""
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.archive_path = Path(self.temp_dir.name) / 'test_archive'
-        self.archive_path.mkdir()
+        self.repository_path = Path(self.temp_dir.name) / 'test_repository'
+        self.repository_path.mkdir()
 
-        # Create archive store with testable subclass
-        settings = ArchiveSettings(self.archive_path)
-        self.store = InterceptedArchiveStore(settings, self.archive_path, create=True)
+        # Create index store with testable subclass
+        settings = IndexSettings(self.repository_path)
+        self.store = InterceptedIndexStore(settings, self.repository_path, create=True)
 
         # Reset hash mapping for each test
-        InterceptedArchiveStore.hash_mapping = {}
+        InterceptedIndexStore.hash_mapping = {}
 
         # Test digest for equivalence classes
         self.digest = b'test_digest_123456'
@@ -62,7 +62,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
 
     def test_add_single_path_no_collision(self):
         """Test adding a single path with no hash collision."""
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'file1.txt': 100
         }
 
@@ -76,7 +76,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
 
     def test_add_multiple_paths_no_collision(self):
         """Test adding multiple paths with different hashes (no collisions)."""
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'file1.txt': 100,
             'file2.txt': 200,
             'file3.txt': 300
@@ -94,7 +94,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
     def test_add_paths_with_collision(self):
         """Test adding multiple paths with same hash (collision)."""
         # Create collision: all paths hash to 100
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'file1.txt': 100,
             'file2.txt': 100,
             'file3.txt': 100
@@ -111,7 +111,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
 
     def test_add_duplicate_path_skipped(self):
         """Test that adding a path that already exists is skipped."""
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'file1.txt': 100
         }
 
@@ -130,7 +130,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
 
     def test_add_paths_mixed_collision(self):
         """Test adding paths with partial collisions."""
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'file1.txt': 100,
             'file2.txt': 100,  # Collides with file1
             'file3.txt': 200,
@@ -148,7 +148,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
 
     def test_remove_single_path_no_collision(self):
         """Test removing a single path with no collision."""
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'file1.txt': 100
         }
 
@@ -164,7 +164,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
 
     def test_remove_path_from_multiple(self):
         """Test removing one path when multiple exist."""
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'file1.txt': 100,
             'file2.txt': 200,
             'file3.txt': 300
@@ -185,7 +185,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
     def test_remove_path_with_collision(self):
         """Test removing a path when collisions exist."""
         # Create collision: all hash to 100
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'file1.txt': 100,
             'file2.txt': 100,
             'file3.txt': 100
@@ -205,7 +205,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
 
     def test_remove_nonexistent_path_ignored(self):
         """Test that removing a path that doesn't exist is silently ignored."""
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'file1.txt': 100
         }
 
@@ -222,7 +222,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
     def test_remove_multiple_paths_with_collision(self):
         """Test removing multiple paths when collisions exist."""
         # All paths hash to 100
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'file1.txt': 100,
             'file2.txt': 100,
             'file3.txt': 100,
@@ -250,7 +250,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
     def test_complex_collision_scenario(self):
         """Test complex scenario with multiple collision groups."""
         # Three collision groups: hash 100, 200, 300
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'a1.txt': 100,
             'a2.txt': 100,
             'a3.txt': 100,
@@ -292,7 +292,7 @@ class TestEquivalenceClassStorage(unittest.TestCase):
 
     def test_nested_paths(self):
         """Test with nested directory paths."""
-        InterceptedArchiveStore.hash_mapping = {
+        InterceptedIndexStore.hash_mapping = {
             'dir1/file1.txt': 100,
             'dir1/subdir/file2.txt': 100,  # Collision
             'dir2/file3.txt': 200

@@ -1,4 +1,4 @@
-handle missing files in the archive
+handle missing files in the repository
 print progress if stdout is a terminal
 graceful interrupting
 handle errors from another process

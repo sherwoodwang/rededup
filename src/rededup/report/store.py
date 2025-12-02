@@ -14,11 +14,11 @@ from ..utils.varint import encode_varint, decode_varint
 
 
 class DuplicateRecord:
-    """Record of a file and its duplicates in the archive with metadata comparisons.
+    """Record of a file and its duplicates in the repository with metadata comparisons.
 
     Attributes:
         path: Path relative to the analyzed target (including target's base name)
-        duplicates: List of DuplicateMatch objects for each duplicate found in the archive.
+        duplicates: List of DuplicateMatch objects for each duplicate found in the repository.
                    Each DuplicateMatch contains the path and metadata comparison results.
         total_size: Total size in bytes of all content within this path.
                    For files: the file size.
@@ -30,43 +30,43 @@ class DuplicateRecord:
                                     (counted the same way as duplicated_items:
                                     regular files count as 1, special files count as 1, directories count as 0).
         duplicated_size: Total size in bytes of this analyzed file/directory's content that
-                        has content-equivalent files in the archive. This is the deduplicated size - each
-                        file is counted once regardless of how many content-equivalent files exist in the archive.
-                        For files: the file size (if content-equivalent files exist in the archive).
+                        has content-equivalent files in the repository. This is the deduplicated size - each
+                        file is counted once regardless of how many content-equivalent files exist in the repository.
+                        For files: the file size (if content-equivalent files exist in the repository).
                         For directories: sum of all descendant file sizes that have any content-equivalent files,
-                                       aggregated recursively from child results across all archive paths
+                                       aggregated recursively from child results across all repository paths
                                        (simple sum without requiring matching files to be at the same location
                                        in any hierarchy).
 
                         IMPORTANT: Semantic difference from DuplicateMatch.duplicated_size:
                         - DuplicateRecord.duplicated_size: Global deduplicated size. Each file in the analyzed
                           path is counted once, regardless of how many content-equivalent files exist across
-                          all archive paths. This is a simple sum of duplicated_size from all child results,
+                          all repository paths. This is a simple sum of duplicated_size from all child results,
                           without structural requirements.
-                        - DuplicateMatch.duplicated_size: Localized size for a specific archive path.
+                        - DuplicateMatch.duplicated_size: Localized size for a specific repository path.
                           When a file in the analyzed path has multiple content-equivalent files in different
-                          archive directories, each DuplicateMatch counts that file's size independently.
+                          repository directories, each DuplicateMatch counts that file's size independently.
                           For directories, only includes files that exist at the same relative location
-                          within the specific archive directory's hierarchy (hierarchy must match).
+                          within the specific repository directory's hierarchy (hierarchy must match).
         duplicated_items: Total count of items within this analyzed file/directory's content that
-                         have content-equivalent files in the archive. This is the deduplicated count - each
-                         item is counted once regardless of how many content-equivalent files exist in the archive.
-                         For files: 1 (if content-equivalent files exist in the archive).
+                         have content-equivalent files in the repository. This is the deduplicated count - each
+                         item is counted once regardless of how many content-equivalent files exist in the repository.
+                         For files: 1 (if content-equivalent files exist in the repository).
                          For directories: count of all descendant items that have any content-equivalent files,
-                                        aggregated recursively from child results across all archive paths
+                                        aggregated recursively from child results across all repository paths
                                         (simple sum without requiring matching items to be at the same location
                                         in any hierarchy).
 
                          IMPORTANT: Semantic difference from DuplicateMatch.duplicated_items:
                          - DuplicateRecord.duplicated_items: Global deduplicated count. Each item in the analyzed
                            path is counted once, regardless of how many content-equivalent files exist across
-                           all archive paths. This is a simple sum of duplicated_items from all child results,
+                           all repository paths. This is a simple sum of duplicated_items from all child results,
                            without structural requirements.
-                         - DuplicateMatch.duplicated_items: Localized count for a specific archive path.
+                         - DuplicateMatch.duplicated_items: Localized count for a specific repository path.
                            When an item in the analyzed path has multiple content-equivalent files in different
-                           archive directories, each DuplicateMatch counts that item independently.
+                           repository directories, each DuplicateMatch counts that item independently.
                            For directories, only includes items that exist at the same relative location
-                           within the specific archive directory's hierarchy (hierarchy must match).
+                           within the specific repository directory's hierarchy (hierarchy must match).
     """
 
     def __init__(
@@ -166,11 +166,11 @@ class ReportManifest:
     version: str = "1.0"
     """Report format version"""
 
-    archive_path: str = ""
-    """Absolute path to the archive that was used for analysis"""
+    repository_path: str = ""
+    """Absolute path to the repository that was used for analysis"""
 
-    archive_id: str = ""
-    """Identifier of the archive, used to validate report is still valid"""
+    repository_id: str = ""
+    """Identifier of the repository, used to validate report is still valid"""
 
     timestamp: str = ""
     """ISO format timestamp when analysis was performed"""
@@ -318,18 +318,18 @@ class ReportStore:
             data = json.load(f)
         return ReportManifest.from_dict(data)
 
-    def validate_report(self, current_archive_id: str) -> bool:
-        """Validate that report matches current archive state.
+    def validate_report(self, current_repository_id: str) -> bool:
+        """Validate that report matches current repository state.
 
         Args:
-            current_archive_id: Current archive identifier to check against
+            current_repository_id: Current repository identifier to check against
 
         Returns:
-            True if report is valid for current archive, False otherwise
+            True if report is valid for current repository, False otherwise
         """
         try:
             manifest = self.read_manifest()
-            return manifest.archive_id == current_archive_id
+            return manifest.repository_id == current_repository_id
         except (FileNotFoundError, json.JSONDecodeError, KeyError):
             return False
 

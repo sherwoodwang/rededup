@@ -7,10 +7,10 @@ from pathlib import Path
 
 import plyvel
 
-from arindexer import Archive
-from arindexer.report.duplicate_match import DuplicateMatchRule
-from arindexer.report.store import DuplicateRecord
-from arindexer.utils.processor import Processor
+from rededup import Repository
+from rededup.report.duplicate_match import DuplicateMatchRule
+from rededup.report.store import DuplicateRecord
+from rededup.utils.processor import Processor
 
 from ..test_utils import copy_times, tweak_times
 
@@ -19,27 +19,27 @@ class FileAnalysisTest(unittest.TestCase):
     """Tests for file analysis with database verification."""
 
     def test_analyze_single_file_exact_match(self):
-        """Analyze a directory containing a single file that exactly matches an archive file."""
+        """Analyze a directory containing a single file that exactly matches an repository file."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_file = archive_path / 'original.txt'
-            archive_file.write_bytes(b'test content')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_file = repository_path / 'original.txt'
+            repository_file.write_bytes(b'test content')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
             target_file = target_path / 'duplicate.txt'
             target_file.write_bytes(b'test content')
-            copy_times(archive_file, target_file)
+            copy_times(repository_file, target_file)
 
             report_dir = target_path.parent / (target_path.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
 
                     # Run analysis on the directory
-                    archive.analyze([target_path])
+                    repository.analyze([target_path])
 
             # Verify database contents
             self.assertTrue(report_dir.exists())
@@ -76,10 +76,10 @@ class FileAnalysisTest(unittest.TestCase):
     def test_analyze_file_content_match_metadata_differ(self):
         """Analyze directory with file having matching content but different metadata."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_file = archive_path / 'original.txt'
-            archive_file.write_bytes(b'shared content')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_file = repository_path / 'original.txt'
+            repository_file.write_bytes(b'shared content')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -90,11 +90,11 @@ class FileAnalysisTest(unittest.TestCase):
             report_dir = target_path.parent / (target_path.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
 
                     # Run analysis on the directory
-                    archive.analyze([target_path])
+                    repository.analyze([target_path])
 
             # Verify database contents
             db = plyvel.DB(str(report_dir / 'database'))
@@ -124,13 +124,13 @@ class FileAnalysisTest(unittest.TestCase):
                 db.close()
 
     def test_analyze_file_multiple_duplicates(self):
-        """Analyze directory with file that matches multiple files in archive."""
+        """Analyze directory with file that matches multiple files in repository."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            (archive_path / 'dup1.txt').write_bytes(b'duplicate')
-            (archive_path / 'dup2.txt').write_bytes(b'duplicate')
-            (archive_path / 'dup3.txt').write_bytes(b'duplicate')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            (repository_path / 'dup1.txt').write_bytes(b'duplicate')
+            (repository_path / 'dup2.txt').write_bytes(b'duplicate')
+            (repository_path / 'dup3.txt').write_bytes(b'duplicate')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -140,11 +140,11 @@ class FileAnalysisTest(unittest.TestCase):
             report_dir = target_path.parent / (target_path.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
 
                     # Run analysis on the directory
-                    archive.analyze([target_path])
+                    repository.analyze([target_path])
 
             # Verify multiple duplicates were found
             db = plyvel.DB(str(report_dir / 'database'))
@@ -187,29 +187,29 @@ class FileAnalysisTest(unittest.TestCase):
     def test_analyze_file_with_custom_comparison_rule(self):
         """Test that comparison rule correctly determines is_identical."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_file = archive_path / 'original.txt'
-            archive_file.write_bytes(b'test content')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_file = repository_path / 'original.txt'
+            repository_file.write_bytes(b'test content')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
             target_file = target_path / 'file.txt'
             target_file.write_bytes(b'test content')
             # Different atime, same everything else
-            copy_times(archive_file, target_file)
+            copy_times(repository_file, target_file)
             # Manually set only atime to be different
-            st = archive_file.stat()
+            st = repository_file.stat()
             os.utime(target_file, ns=(st.st_atime_ns + 9999999999, st.st_mtime_ns), follow_symlinks=False)
 
             report_dir = target_path.parent / (target_path.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
 
                     # Test with default rule (atime excluded)
-                    archive.analyze([target_path])
+                    repository.analyze([target_path])
 
             # With default rule (atime excluded), should be identical
             db = plyvel.DB(str(report_dir / 'database'))
@@ -244,9 +244,9 @@ class FileAnalysisTest(unittest.TestCase):
             rule_with_atime = DuplicateMatchRule(include_atime=True)
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_path], comparison_rule=rule_with_atime)
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_path], comparison_rule=rule_with_atime)
 
             # With atime included, should NOT be identical
             db = plyvel.DB(str(report_dir / 'database'))
@@ -271,17 +271,17 @@ class FileAnalysisTest(unittest.TestCase):
     def test_analyze_file_ctime_differs(self):
         """Test that ctime_match is False when only ctime differs."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_file = archive_path / 'original.txt'
-            archive_file.write_bytes(b'test content')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_file = repository_path / 'original.txt'
+            repository_file.write_bytes(b'test content')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
             target_file = target_path / 'file.txt'
             target_file.write_bytes(b'test content')
             # Copy mtime and atime to match
-            copy_times(archive_file, target_file)
+            copy_times(repository_file, target_file)
             # Change ctime by modifying a metadata attribute
             current_mode = target_file.stat().st_mode
             os.chmod(target_file, current_mode | 0o100)  # Add execute for owner
@@ -290,9 +290,9 @@ class FileAnalysisTest(unittest.TestCase):
             report_dir = target_path.parent / (target_path.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_path])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_path])
 
             # Verify ctime_match is False
             db = plyvel.DB(str(report_dir / 'database'))
@@ -323,25 +323,25 @@ class FileAnalysisTest(unittest.TestCase):
     def test_analyze_file_mode_differs(self):
         """Test that mode_match is False when file permissions differ."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_file = archive_path / 'original.txt'
-            archive_file.write_bytes(b'test content')
-            os.chmod(archive_file, 0o644)
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_file = repository_path / 'original.txt'
+            repository_file.write_bytes(b'test content')
+            os.chmod(repository_file, 0o644)
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
             target_file = target_path / 'file.txt'
             target_file.write_bytes(b'test content')
             os.chmod(target_file, 0o755)  # Different permissions
-            copy_times(archive_file, target_file)
+            copy_times(repository_file, target_file)
 
             report_dir = target_path.parent / (target_path.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_path])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_path])
 
             # Verify mode_match is False
             db = plyvel.DB(str(report_dir / 'database'))
@@ -376,11 +376,11 @@ class FileAnalysisTest(unittest.TestCase):
             self.skipTest("Test requires root privileges to change file ownership")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_file = archive_path / 'original.txt'
-            archive_file.write_bytes(b'test content')
-            # Keep current owner for archive file
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_file = repository_path / 'original.txt'
+            repository_file.write_bytes(b'test content')
+            # Keep current owner for repository file
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -388,14 +388,14 @@ class FileAnalysisTest(unittest.TestCase):
             target_file.write_bytes(b'test content')
             # Change owner to nobody (UID 65534 on most systems)
             os.chown(target_file, 65534, -1)  # -1 means don't change group
-            copy_times(archive_file, target_file)
+            copy_times(repository_file, target_file)
 
             report_dir = target_path.parent / (target_path.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_path])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_path])
 
             # Verify owner_match is False
             db = plyvel.DB(str(report_dir / 'database'))
@@ -438,25 +438,25 @@ class FileAnalysisTest(unittest.TestCase):
             self.skipTest("Unable to get user groups")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_file = archive_path / 'original.txt'
-            archive_file.write_bytes(b'test content')
-            os.chown(archive_file, -1, group1)
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_file = repository_path / 'original.txt'
+            repository_file.write_bytes(b'test content')
+            os.chown(repository_file, -1, group1)
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
             target_file = target_path / 'file.txt'
             target_file.write_bytes(b'test content')
             os.chown(target_file, -1, group2)  # Different group
-            copy_times(archive_file, target_file)
+            copy_times(repository_file, target_file)
 
             report_dir = target_path.parent / (target_path.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_path])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_path])
 
             # Verify group_match is False
             db = plyvel.DB(str(report_dir / 'database'))

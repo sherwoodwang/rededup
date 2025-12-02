@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer.report.path import find_report_for_path
+from rededup.report.path import find_report_for_path
 
 
 class FindReportTest(unittest.TestCase):

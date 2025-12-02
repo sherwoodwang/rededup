@@ -26,7 +26,7 @@ from ..report.store import DuplicateRecord, ReportManifest, ReportStore
 from ..utils.processor import Processor
 from ..utils.directory_listener import DirectoryListenerCoordinator, DirectoryListener
 from ..utils.walker import FileContext
-from ..store.archive_store import ArchiveStore
+from ..index.store import IndexStore
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +64,11 @@ class ImmediateResult(FileAnalysisResult):
 
         Args:
             report_path: Path relative to the parent of the input path being analyzed
-            duplicates: List of DuplicateMatch objects for each duplicate found in the archive
+            duplicates: List of DuplicateMatch objects for each duplicate found in the repository
             total_size: Total size in bytes of all content within this path
             total_items: Total count of items within this path
-            duplicated_size: Total size in bytes of content that has content-equivalent files in the archive
-            duplicated_items: Total count of items that have content-equivalent files in the archive
+            duplicated_size: Total size in bytes of content that has content-equivalent files in the repository
+            duplicated_items: Total count of items that have content-equivalent files in the repository
         """
         self.report_path = report_path
         self.duplicates = duplicates
@@ -133,28 +133,28 @@ class AnalyzeArgs(NamedTuple):
     processor: Processor  # File processing backend for content comparison
     input_paths: list[Path]  # List of files/directories to analyze
     hash_algorithm: tuple[int, Any]  # Hash algorithm configuration (digest_size, calculator)
-    archive_id: str  # Current archive identifier
-    archive_path: Path  # Path to the archive
+    repository_id: str  # Current repository identifier
+    repository_path: Path  # Path to the repository
     comparison_rule: DuplicateMatchRule  # Rule defining which metadata must match for identity
 
 
 class AnalyzeProcessor:
     """Processor for analysis operations that encapsulates state and logic."""
 
-    def __init__(self, store: ArchiveStore, args: AnalyzeArgs, input_path: Path, report_store: ReportStore) -> None:
+    def __init__(self, store: IndexStore, args: AnalyzeArgs, input_path: Path, report_store: ReportStore) -> None:
         """Initialize the analyze processor.
 
         Args:
-            store: Archive store for accessing indexed files
+            store: Repository store for accessing indexed files
             args: Analysis arguments
             input_path: Path to analyze
             report_store: Report store with open database connection
         """
-        self._store: ArchiveStore = store
+        self._store: IndexStore = store
         self._processor: Processor = args.processor
         self._input_path: Path = input_path
         self._report_store: ReportStore = report_store
-        self._archive_path: Path = store.archive_path
+        self._repository_path: Path = store.repository_path
         _, self._calculate_digest = args.hash_algorithm
         self._comparison_rule: DuplicateMatchRule = args.comparison_rule
         self._listener_coordinator: DirectoryListenerCoordinator | None = None
@@ -265,15 +265,15 @@ class AnalyzeProcessor:
         # Accumulate totals from all child results
         # total_size: sum of all child file sizes (whether duplicated or not)
         # total_items: count of all child items, including nested ones (files and special files, not directories)
-        # duplicated_size: sum of child file sizes that have content-equivalent files in archive
-        # duplicated_items: count of child items that have content-equivalent files in archive
+        # duplicated_size: sum of child file sizes that have content-equivalent files in repository
+        # duplicated_items: count of child items that have content-equivalent files in repository
         total_size = 0
         total_items = 0
         duplicated_size = 0
         duplicated_items = 0
 
-        # Build map of candidate archive directories to their pending file comparisons
-        # candidate_matches[archive_dir][base_name] = DuplicateMatch for file in archive_dir
+        # Build map of candidate repository directories to their pending file comparisons
+        # candidate_matches[repository_dir][base_name] = DuplicateMatch for file in repository_dir
         candidate_matches: dict[Path, dict[str, DuplicateMatch]] = {}
         # base names of deferred items
         deferred_items: set[str] = set()
@@ -286,7 +286,7 @@ class AnalyzeProcessor:
                 for comparison in result.duplicates:
                     # Only process duplicates that match the current file name
                     if result.base_name == comparison.path.name:
-                        # comparison.path is the path to the duplicate file in the archive
+                        # comparison.path is the path to the duplicate file in the repository
                         # Get its parent directory as a candidate
                         # Skip root-level files (where parent would be Path('.'))
                         if comparison.path.parent != Path('.'):
@@ -323,7 +323,7 @@ class AnalyzeProcessor:
         for base_name in deferred_items:
             matched_count, results = self._compare_deferred_item(
                 dir_path / base_name,
-                [self._archive_path / candidate_dir / base_name for candidate_dir in candidate_dirs]
+                [self._repository_path / candidate_dir / base_name for candidate_dir in candidate_dirs]
             )
 
             duplicated_items += matched_count
@@ -336,11 +336,11 @@ class AnalyzeProcessor:
                 candidate_dir, non_identical=False, non_superset=False)
             for candidate_dir in candidate_dirs}
 
-        # Compare this directory with each candidate archive directory
+        # Compare this directory with each candidate repository directory
         metadata_comparisons: list[DuplicateMatch] = []
 
         for candidate_dir, child_matches in candidate_matches.items():
-            candidate_full_path: Path = self._archive_path / candidate_dir
+            candidate_full_path: Path = self._repository_path / candidate_dir
 
             # Track metadata matches using reducer
             reducer = MetadataMatchReducer(self._comparison_rule)
@@ -427,7 +427,7 @@ class AnalyzeProcessor:
 
         Args:
             analyzed_item_path: Absolute path to the analyzed item
-            candidate_item_paths: List of absolute paths to candidate items in the archive
+            candidate_item_paths: List of absolute paths to candidate items in the repository
 
         Returns:
             A tuple of (matched_count, results) where:
@@ -577,7 +577,7 @@ class AnalyzeProcessor:
 
             candidate_path, _, reducer = entry
             results.append(reducer.create_duplicate_match(
-                candidate_path.relative_to(self._archive_path),
+                candidate_path.relative_to(self._repository_path),
                 non_identical=non_identical,
                 non_superset=non_superset,
             ))
@@ -599,12 +599,12 @@ class AnalyzeProcessor:
         # Calculate digest
         digest: bytes = await self._calculate_digest(file_path)
 
-        # Find matching files in the archive
+        # Find matching files in the repository
         duplicates_found: list[Path] = []
 
         for ec_id, paths in self._store.list_content_equivalent_classes(digest):
             # Verify content actually matches (handle hash collisions)
-            if await self._processor.compare_content(self._archive_path / paths[0], file_path):
+            if await self._processor.compare_content(self._repository_path / paths[0], file_path):
                 # All files in this EC class have identical content
                 duplicates_found = paths
                 break
@@ -616,7 +616,7 @@ class AnalyzeProcessor:
         # Compare metadata with each duplicate
         metadata_comparisons: list[DuplicateMatch] = []
         for dup_path in duplicates_found:
-            full_dup_path: Path = self._archive_path / dup_path
+            full_dup_path: Path = self._repository_path / dup_path
             dup_stat: os.stat_result = full_dup_path.stat()
 
             # Compare metadata attributes
@@ -663,7 +663,7 @@ class AnalyzeProcessor:
 
 
 async def do_analyze(
-        store: ArchiveStore,
+        store: IndexStore,
         args: AnalyzeArgs) -> None:
     """Async implementation of analysis report generation.
 
@@ -671,7 +671,7 @@ async def do_analyze(
     containing a LevelDB database with duplicate records.
 
     Args:
-        store: Archive store for accessing indexed files
+        store: Repository store for accessing indexed files
         args: Analysis arguments including paths to analyze
 
     Raises:
@@ -697,16 +697,16 @@ async def do_analyze(
         report_store.create_report_directory()
 
         # Create and write manifest
-        # Normalize archive_path to remove . and .. components without following symlinks
+        # Normalize repository_path to remove . and .. components without following symlinks
         # - Path() keeps .. components (e.g., Path("/a/b/../c") has .. in parts)
         # - Path.resolve() follows symlinks on filesystem (undesirable here)
         # - os.path.normpath() removes . and .. without following symlinks (what we want)
-        archive_path_normalized = args.archive_path if args.archive_path.is_absolute() else Path.cwd() / args.archive_path
-        archive_path_normalized = Path(os.path.normpath(str(archive_path_normalized)))
+        repository_path_normalized = args.repository_path if args.repository_path.is_absolute() else Path.cwd() / args.repository_path
+        repository_path_normalized = Path(os.path.normpath(str(repository_path_normalized)))
 
         manifest: ReportManifest = ReportManifest(
-            archive_path=str(archive_path_normalized),
-            archive_id=args.archive_id,
+            repository_path=str(repository_path_normalized),
+            repository_id=args.repository_id,
             timestamp=datetime.now().isoformat(),
             comparison_rule=args.comparison_rule.to_dict()
         )

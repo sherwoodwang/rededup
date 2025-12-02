@@ -1,44 +1,44 @@
-"""Tests for core Archive operations.
+"""Tests for core Repository operations.
 
-This module contains focused unit tests for Archive class functionality:
-- Archive creation and basic operations
+This module contains focused unit tests for Repository class functionality:
+- Repository creation and basic operations
 - Rebuild and refresh operations
 """
 import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer import Archive
-from arindexer.utils.processor import Processor
+from rededup import Repository
+from rededup.utils.processor import Processor
 
 
-class ArchiveCoreOperationsTest(unittest.TestCase):
-    """Tests for basic archive creation and core operations."""
+class RepositoryCoreOperationsTest(unittest.TestCase):
+    """Tests for basic repository creation and core operations."""
 
-    def test_create_archive(self):
-        """Archive can be created in an empty directory."""
+    def test_create_repository(self):
+        """Repository can be created in an empty directory."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    # Archive should be created successfully
-                    self.assertIsNotNone(archive)
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    # Repository should be created successfully
+                    self.assertIsNotNone(repository)
                     # Index directory should exist
-                    self.assertTrue((archive_path / '.aridx').exists())
+                    self.assertTrue((repository_path / '.rededup').exists())
 
-    def test_rebuild_empty_archive(self):
-        """Rebuild on an archive with no files completes successfully."""
+    def test_rebuild_empty_repository(self):
+        """Rebuild on a repository with no files completes successfully."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    # Should have manifest properties (hash-algorithm and archive-id), no file entries
-                    entries = list(archive.inspect())
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    # Should have manifest properties (hash-algorithm and repository-id), no file entries
+                    entries = list(repository.inspect())
                     self.assertEqual(2, len(entries))
                     self.assertTrue(any('manifest-property' in e for e in entries))
                     # Verify both manifest properties are present
@@ -48,17 +48,17 @@ class ArchiveCoreOperationsTest(unittest.TestCase):
     def test_rebuild_single_file(self):
         """Rebuild correctly indexes a single file."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
             # Create a single file
-            (archive_path / 'test.txt').write_bytes(b'test content')
+            (repository_path / 'test.txt').write_bytes(b'test content')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
 
-                    entries = list(archive.inspect())
+                    entries = list(repository.inspect())
                     # Should have file-metadata and file-hash entries
                     self.assertGreater(len(entries), 0)
                     # Should contain the filename
@@ -67,19 +67,19 @@ class ArchiveCoreOperationsTest(unittest.TestCase):
     def test_rebuild_idempotent(self):
         """Multiple rebuilds produce identical results."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
-            (archive_path / 'file1.txt').write_bytes(b'content1')
-            (archive_path / 'file2.txt').write_bytes(b'content2')
+            (repository_path / 'file1.txt').write_bytes(b'content1')
+            (repository_path / 'file2.txt').write_bytes(b'content2')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    first_result = set(archive.inspect())
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    first_result = set(repository.inspect())
 
-                    archive.rebuild()
-                    second_result = set(archive.inspect())
+                    repository.rebuild()
+                    second_result = set(repository.inspect())
 
                     # Results should be identical (ignoring timestamp variations)
                     self.assertEqual(len(first_result), len(second_result))
@@ -87,42 +87,42 @@ class ArchiveCoreOperationsTest(unittest.TestCase):
     def test_refresh_no_changes(self):
         """Refresh with no filesystem changes maintains the index."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
-            (archive_path / 'test.txt').write_bytes(b'test content')
+            (repository_path / 'test.txt').write_bytes(b'test content')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    before = set(archive.inspect())
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    before = set(repository.inspect())
 
-                    archive.refresh()
-                    after = set(archive.inspect())
+                    repository.refresh()
+                    after = set(repository.inspect())
 
-                    # Filter out archive-id which changes on every refresh
-                    before_filtered = {e for e in before if 'archive-id' not in e}
-                    after_filtered = {e for e in after if 'archive-id' not in e}
+                    # Filter out repository-id which changes on every refresh
+                    before_filtered = {e for e in before if 'repository-id' not in e}
+                    after_filtered = {e for e in after if 'repository-id' not in e}
                     self.assertEqual(before_filtered, after_filtered)
 
     def test_refresh_after_file_added(self):
         """Refresh detects newly added file."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
-            (archive_path / 'existing.txt').write_bytes(b'existing')
+            (repository_path / 'existing.txt').write_bytes(b'existing')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    before = list(archive.inspect())
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    before = list(repository.inspect())
 
                     # Add new file
-                    (archive_path / 'new.txt').write_bytes(b'new content')
+                    (repository_path / 'new.txt').write_bytes(b'new content')
 
-                    archive.refresh()
-                    after = list(archive.inspect())
+                    repository.refresh()
+                    after = list(repository.inspect())
 
                     # Should have more entries now
                     self.assertGreater(len(after), len(before))
@@ -132,22 +132,22 @@ class ArchiveCoreOperationsTest(unittest.TestCase):
     def test_refresh_after_file_deleted(self):
         """Refresh detects deleted file."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
-            (archive_path / 'file1.txt').write_bytes(b'content1')
-            (archive_path / 'file2.txt').write_bytes(b'content2')
+            (repository_path / 'file1.txt').write_bytes(b'content1')
+            (repository_path / 'file2.txt').write_bytes(b'content2')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    before = list(archive.inspect())
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    before = list(repository.inspect())
 
                     # Delete a file
-                    (archive_path / 'file1.txt').unlink()
+                    (repository_path / 'file1.txt').unlink()
 
-                    archive.refresh()
-                    after = list(archive.inspect())
+                    repository.refresh()
+                    after = list(repository.inspect())
 
                     # Should have fewer entries
                     self.assertLess(len(after), len(before))
@@ -159,24 +159,24 @@ class ArchiveCoreOperationsTest(unittest.TestCase):
     def test_refresh_after_file_modified(self):
         """Refresh detects modified file content."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
-            test_file = archive_path / 'test.txt'
+            test_file = repository_path / 'test.txt'
             test_file.write_bytes(b'original content')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    before = list(archive.inspect())
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    before = list(repository.inspect())
 
                     # Modify the file
                     import time
                     time.sleep(0.01)  # Ensure mtime changes
                     test_file.write_bytes(b'modified content')
 
-                    archive.refresh()
-                    after = list(archive.inspect())
+                    repository.refresh()
+                    after = list(repository.inspect())
 
                     # Index should be updated (different hash)
                     # Extract digests from entries

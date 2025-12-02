@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer.utils.processor import Processor
+from rededup.utils.processor import Processor
 
 
 class ProcessorTest(unittest.TestCase):

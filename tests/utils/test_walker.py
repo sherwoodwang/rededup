@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer.utils.walker import (
+from rededup.utils.walker import (
     FileContext,
     WalkPolicy,
     walk_with_policy,
@@ -97,11 +97,11 @@ class FileContextTest(unittest.TestCase):
 
     def test_relative_path_with_root_name(self):
         """Test relative_path when root has a name."""
-        root = FileContext(None, "archive")
+        root = FileContext(None, "repository")
         dir1 = FileContext(root, "subdir")
         file_ctx = FileContext(dir1, "file.txt")
 
-        self.assertEqual(Path("archive/subdir/file.txt"), file_ctx.relative_path)
+        self.assertEqual(Path("repository/subdir/file.txt"), file_ctx.relative_path)
 
     def test_is_file(self):
         """Test is_file method."""
@@ -289,18 +289,18 @@ class WalkWithPolicyTest(unittest.TestCase):
             external.mkdir()
             (external / "external_file.txt").write_text("external content")
 
-            # Create archive with symlink
-            archive = Path(tmpdir) / "archive"
-            archive.mkdir()
-            (archive / "regular_file.txt").write_text("regular")
+            # Create repository with symlink
+            repository = Path(tmpdir) / "repository"
+            repository.mkdir()
+            (repository / "regular_file.txt").write_text("regular")
 
-            symlink = archive / "link_to_external"
+            symlink = repository / "link_to_external"
             symlink.symlink_to(external)
 
             # Policy that follows the symlink
             def follow_symlink_policy(file_path: Path, file_context: FileContext) -> FileContext | None:
                 if file_context.relative_path == Path("link_to_external"):
-                    resolved = resolve_symlink_target(file_path, {archive})
+                    resolved = resolve_symlink_target(file_path, {repository})
                     if resolved:
                         return FileContext(file_context.parent, file_path.name, resolved)
                 return None
@@ -312,7 +312,7 @@ class WalkWithPolicyTest(unittest.TestCase):
             )
 
             paths = []
-            for file_path, file_context in walk_with_policy(archive, policy):
+            for file_path, file_context in walk_with_policy(repository, policy):
                 paths.append(file_context.relative_path)
 
             paths_set = set(paths)
@@ -338,15 +338,15 @@ class ResolveSymlinkTargetTest(unittest.TestCase):
             external.mkdir()
             (external / "file.txt").write_text("content")
 
-            # Create archive with symlink
-            archive = base / "archive"
-            archive.mkdir()
+            # Create repository with symlink
+            repository = base / "repository"
+            repository.mkdir()
 
-            symlink = archive / "link"
+            symlink = repository / "link"
             symlink.symlink_to(external)
 
             # Resolve should succeed (target outside boundary)
-            resolved = resolve_symlink_target(symlink, {archive})
+            resolved = resolve_symlink_target(symlink, {repository})
 
             self.assertIsNotNone(resolved)
             self.assertEqual(external, resolved)
@@ -355,19 +355,19 @@ class ResolveSymlinkTargetTest(unittest.TestCase):
         """Test that symlink pointing inside boundary returns None."""
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
-            archive = base / "archive"
-            archive.mkdir()
+            repository = base / "repository"
+            repository.mkdir()
 
             # Create internal directory
-            internal = archive / "internal"
+            internal = repository / "internal"
             internal.mkdir()
 
             # Create symlink pointing to internal directory
-            symlink = archive / "link"
+            symlink = repository / "link"
             symlink.symlink_to(internal)
 
             # Should return None (target inside boundary)
-            resolved = resolve_symlink_target(symlink, {archive})
+            resolved = resolve_symlink_target(symlink, {repository})
 
             self.assertIsNone(resolved)
 
@@ -375,14 +375,14 @@ class ResolveSymlinkTargetTest(unittest.TestCase):
         """Test that broken symlink returns None."""
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
-            archive = base / "archive"
-            archive.mkdir()
+            repository = base / "repository"
+            repository.mkdir()
 
             # Create symlink to non-existent target
-            symlink = archive / "broken_link"
+            symlink = repository / "broken_link"
             symlink.symlink_to("/nonexistent/path")
 
-            resolved = resolve_symlink_target(symlink, {archive})
+            resolved = resolve_symlink_target(symlink, {repository})
 
             self.assertIsNone(resolved)
 
@@ -390,17 +390,17 @@ class ResolveSymlinkTargetTest(unittest.TestCase):
         """Test that symlink loop is detected and returns None."""
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
-            archive = base / "archive"
-            archive.mkdir()
+            repository = base / "repository"
+            repository.mkdir()
 
             # Create symlink loop
-            link1 = archive / "link1"
-            link2 = archive / "link2"
+            link1 = repository / "link1"
+            link2 = repository / "link2"
 
             link1.symlink_to(link2)
             link2.symlink_to(link1)
 
-            resolved = resolve_symlink_target(link1, {archive})
+            resolved = resolve_symlink_target(link1, {repository})
 
             self.assertIsNone(resolved)
 
@@ -413,15 +413,15 @@ class ResolveSymlinkTargetTest(unittest.TestCase):
             external = base / "external"
             external.mkdir()
 
-            # Create archive
-            archive = base / "archive"
-            archive.mkdir()
+            # Create repository
+            repository = base / "repository"
+            repository.mkdir()
 
             # Create absolute symlink (relative symlinks with .. have path normalization issues)
-            symlink = archive / "link"
+            symlink = repository / "link"
             symlink.symlink_to(external)  # Use absolute path instead
 
-            resolved = resolve_symlink_target(symlink, {archive})
+            resolved = resolve_symlink_target(symlink, {repository})
 
             # Should resolve to the external directory
             self.assertIsNotNone(resolved)
@@ -437,21 +437,21 @@ class ResolveSymlinkTargetTest(unittest.TestCase):
             final_target = base / "final"
             final_target.mkdir()
 
-            # Create intermediate symlink outside archive
+            # Create intermediate symlink outside repository
             intermediate = base / "intermediate"
             intermediate.symlink_to(final_target)
 
-            # Create archive with symlink to intermediate
-            archive = base / "archive"
-            archive.mkdir()
+            # Create repository with symlink to intermediate
+            repository = base / "repository"
+            repository.mkdir()
 
-            symlink = archive / "link"
+            symlink = repository / "link"
             symlink.symlink_to(intermediate)
 
-            resolved = resolve_symlink_target(symlink, {archive})
+            resolved = resolve_symlink_target(symlink, {repository})
 
             # The function checks if each jump in the chain points under the boundary.
-            # intermediate is outside the archive, but it's a symlink itself.
+            # intermediate is outside the repository, but it's a symlink itself.
             # The function should follow the entire chain and return the final non-symlink target.
             self.assertIsNotNone(resolved)
             self.assertTrue(resolved.exists())
@@ -462,23 +462,23 @@ class ResolveSymlinkTargetTest(unittest.TestCase):
         """Test chain where one symlink points inside boundary."""
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
-            archive = base / "archive"
-            archive.mkdir()
+            repository = base / "repository"
+            repository.mkdir()
 
             # Create internal target
-            internal = archive / "internal"
+            internal = repository / "internal"
             internal.mkdir()
 
             # Create external symlink pointing to internal
             external_link = base / "external_link"
             external_link.symlink_to(internal)
 
-            # Create symlink in archive pointing to external link
-            symlink = archive / "link"
+            # Create symlink in repository pointing to external link
+            symlink = repository / "link"
             symlink.symlink_to(external_link)
 
             # Should return None because chain eventually points inside boundary
-            resolved = resolve_symlink_target(symlink, {archive})
+            resolved = resolve_symlink_target(symlink, {repository})
 
             self.assertIsNone(resolved)
 
@@ -486,14 +486,14 @@ class ResolveSymlinkTargetTest(unittest.TestCase):
         """Test that regular file/directory returns the path itself."""
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
-            archive = base / "archive"
-            archive.mkdir()
+            repository = base / "repository"
+            repository.mkdir()
 
-            # Create regular file outside archive
+            # Create regular file outside repository
             external_file = base / "external.txt"
             external_file.write_text("content")
 
-            resolved = resolve_symlink_target(external_file, {archive})
+            resolved = resolve_symlink_target(external_file, {repository})
 
             # Non-symlink that exists should return the path itself
             self.assertIsNotNone(resolved)

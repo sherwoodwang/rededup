@@ -2,8 +2,8 @@
 import unittest
 from pathlib import Path
 
-from arindexer.report.duplicate_match import DuplicateMatch
-from arindexer.report.store import DuplicateRecord
+from rededup.report.duplicate_match import DuplicateMatch
+from rededup.report.store import DuplicateRecord
 
 
 class DuplicateRecordTest(unittest.TestCase):
@@ -54,12 +54,12 @@ class DuplicateRecordTest(unittest.TestCase):
     def test_msgpack_serialization_new_format(self):
         """Test msgpack serialization with new format including is_identical, is_superset, and duplicated_items."""
         comparison = DuplicateMatch(
-            Path('archive/dup.txt'),
+            Path('repository/dup.txt'),
             mtime_match=True, atime_match=False, ctime_match=True, mode_match=True,
             duplicated_size=512, duplicated_items=1,
             is_identical=False, is_superset=True
         )
-        duplicates = [(Path('archive/dup.txt'), comparison)]
+        duplicates = [(Path('repository/dup.txt'), comparison)]
 
         original = DuplicateRecord(
             path=Path('target/file.txt'),
@@ -98,12 +98,12 @@ class DuplicateRecordTest(unittest.TestCase):
     def test_msgpack_with_nested_paths(self):
         """Test msgpack serialization with deeply nested paths."""
         comparison = DuplicateMatch(
-            Path('archive/deep/nested/dir/file.txt'),
+            Path('repository/deep/nested/dir/file.txt'),
             mtime_match=True, atime_match=True, ctime_match=True, mode_match=True,
             duplicated_size=1024, duplicated_items=1,
             is_identical=True, is_superset=True
         )
-        duplicates = [(Path('archive/deep/nested/dir/file.txt'), comparison)]
+        duplicates = [(Path('repository/deep/nested/dir/file.txt'), comparison)]
 
         original = DuplicateRecord(
             path=Path('target/also/deep/nested/file.txt'),

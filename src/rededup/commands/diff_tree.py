@@ -1,4 +1,4 @@
-"""Diff-tree subcommand for comparing analyzed directories with archive duplicates."""
+"""Diff-tree subcommand for comparing analyzed directories with repository duplicates."""
 
 from collections.abc import Callable
 from enum import Enum
@@ -6,18 +6,18 @@ from pathlib import Path
 
 from ..report.path import find_report_for_path, get_report_directory_path
 from ..report.store import ReportStore, DuplicateRecord
-from ..store.path import find_archive_for_path
-from ..store.archive_store import ArchiveStore
-from ..store.archive_settings import ArchiveSettings
+from ..index.path import find_repository_for_path
+from ..index.store import IndexStore
+from ..index.settings import IndexSettings
 
 
 class NodeStatus(Enum):
     """Status of a node in the diff tree."""
     ANALYZED_ONLY = "analyzed"  # Only in analyzed directory
-    ARCHIVE_ONLY = "archive"  # Only in archive directory
+    REPOSITORY_ONLY = "repository"  # Only in repository directory
     DIFFERENT = "different"  # In both but content differs
     CONTENT_MATCH = "content_match"  # Same content but different metadata (files only)
-    SUPERSET = "superset"  # Archive contains all analyzed content plus extras (dirs only)
+    SUPERSET = "superset"  # Repository contains all analyzed content plus extras (dirs only)
     IDENTICAL = "identical"  # In both and identical (content + metadata, will be skipped)
 
 
@@ -30,7 +30,7 @@ SPACE = "    "
 # Status markers for files
 FILE_STATUS_MARKERS = {
     NodeStatus.ANALYZED_ONLY: " [A]",
-    NodeStatus.ARCHIVE_ONLY: " [R]",
+    NodeStatus.REPOSITORY_ONLY: " [R]",
     NodeStatus.DIFFERENT: " [D]",
     NodeStatus.CONTENT_MATCH: " [M]",  # Metadata differs
 }
@@ -38,9 +38,9 @@ FILE_STATUS_MARKERS = {
 # Status markers for directories (incorporating superset info)
 DIR_STATUS_MARKERS = {
     NodeStatus.ANALYZED_ONLY: " [A]",
-    NodeStatus.ARCHIVE_ONLY: " [R]",
+    NodeStatus.REPOSITORY_ONLY: " [R]",
     NodeStatus.DIFFERENT: " [D]",
-    NodeStatus.SUPERSET: " [+]",  # Archive has all analyzed content plus extras
+    NodeStatus.SUPERSET: " [+]",  # Repository has all analyzed content plus extras
     NodeStatus.CONTENT_MATCH: " [M]",  # Same content but metadata differs
 }
 
@@ -164,7 +164,7 @@ class DiffTreeProcessor:
         self,
         report_store: ReportStore,
         analyzed_base: Path,
-        archive_base: Path,
+        repository_base: Path,
         hide_content_match: bool = False,
         max_depth: int | None = None,
         show_filter: str = "both"
@@ -174,14 +174,14 @@ class DiffTreeProcessor:
         Args:
             report_store: Report store to look up duplicate information
             analyzed_base: Parent of the directory that has *.report next to it (absolute path)
-            archive_base: Directory where .aridx is a direct child (absolute path)
+            repository_base: Directory where .rededup is a direct child (absolute path)
             hide_content_match: If True, hide files that match content but differ in metadata
             max_depth: Maximum depth to display (None = unlimited)
-            show_filter: Filter for which files to show: "both", "analyzed", or "archive"
+            show_filter: Filter for which files to show: "both", "analyzed", or "repository"
         """
         self._report_store = report_store
         self._analyzed_base = analyzed_base
-        self._archive_base = archive_base
+        self._repository_base = repository_base
         self._hide_content_match = hide_content_match
         self._max_depth = max_depth
         self._show_filter = show_filter
@@ -189,20 +189,20 @@ class DiffTreeProcessor:
     def _get_node_status(
         self,
         analyzed_relative: Path | None,
-        archive_relative: Path | None
+        repository_relative: Path | None
     ) -> NodeStatus:
         """Determine the status of a node using report information.
 
         Args:
             analyzed_relative: Relative path from analyzed_base, or None if not present
-            archive_relative: Relative path from archive_base, or None if not present
+            repository_relative: Relative path from repository_base, or None if not present
 
         Returns:
             NodeStatus indicating the comparison result
         """
         if analyzed_relative is None:
-            return NodeStatus.ARCHIVE_ONLY
-        if archive_relative is None:
+            return NodeStatus.REPOSITORY_ONLY
+        if repository_relative is None:
             return NodeStatus.ANALYZED_ONLY
 
         # Both exist - look up in report
@@ -217,9 +217,9 @@ class DiffTreeProcessor:
             # No duplicates found in analysis - they differ
             return NodeStatus.DIFFERENT
 
-        # archive_relative is already relative to archive_base (the archive root)
+        # repository_relative is already relative to repository_base (the repository root)
         # so it's ready to use for lookup
-        lookup_path = archive_relative
+        lookup_path = repository_relative
 
         # Find matching duplicate
         for dup in record.duplicates:
@@ -228,7 +228,7 @@ class DiffTreeProcessor:
                 if dup.is_identical:
                     return NodeStatus.IDENTICAL
                 elif dup.is_superset:
-                    # Archive contains all analyzed content plus possibly extras (directories only)
+                    # Repository contains all analyzed content plus possibly extras (directories only)
                     return NodeStatus.SUPERSET
                 else:
                     # is_identical=False and is_superset=False
@@ -238,7 +238,7 @@ class DiffTreeProcessor:
                     #
                     # The is_superset flag properly propagates from children, so if is_superset=False
                     # for a directory, it means either:
-                    # 1. Some analyzed content is missing from archive, OR
+                    # 1. Some analyzed content is missing from repository, OR
                     # 2. Some descendant has differing content or metadata
                     #
                     # Only return CONTENT_MATCH for directories when ALL of:
@@ -306,7 +306,7 @@ class DiffTreeProcessor:
         self,
         output: TreeOutput,
         analyzed_relative: Path | None,
-        archive_relative: Path | None,
+        repository_relative: Path | None,
         name: str,
         level: int,
         is_last: bool,
@@ -319,7 +319,7 @@ class DiffTreeProcessor:
         Args:
             output: TreeOutput object to write to
             analyzed_relative: Relative path from analyzed_base, or None
-            archive_relative: Relative path from archive_base, or None
+            repository_relative: Relative path from repository_base, or None
             name: Name to display for this node
             level: Current depth level (0 = root)
             is_last: Whether this node is the last child in its parent
@@ -331,11 +331,11 @@ class DiffTreeProcessor:
         """
         # Convert relative paths to absolute for directory operations
         analyzed_dir = None if analyzed_relative is None else self._analyzed_base / analyzed_relative
-        archive_dir = None if archive_relative is None else self._archive_base / archive_relative
+        repository_dir = None if repository_relative is None else self._repository_base / repository_relative
 
         # Get child names from both directories
         analyzed_children: set[str] = set()
-        archive_children: set[str] = set()
+        repository_children: set[str] = set()
 
         if analyzed_dir is not None and analyzed_dir.is_dir():
             try:
@@ -343,14 +343,14 @@ class DiffTreeProcessor:
             except (OSError, PermissionError):
                 pass
 
-        if archive_dir is not None and archive_dir.is_dir():
+        if repository_dir is not None and repository_dir.is_dir():
             try:
-                archive_children = {child.name for child in archive_dir.iterdir()}
+                repository_children = {child.name for child in repository_dir.iterdir()}
             except (OSError, PermissionError):
                 pass
 
         # Merge child names and sort
-        all_names = sorted(analyzed_children | archive_children)
+        all_names = sorted(analyzed_children | repository_children)
 
         # Process children
         children_with_diffs: list[tuple[str, Path | None, Path | None, NodeStatus, bool]] = []
@@ -358,15 +358,15 @@ class DiffTreeProcessor:
         for child_name in all_names:
             # Determine which side has this child
             in_analyzed = child_name in analyzed_children
-            in_archive = child_name in archive_children
+            in_repository = child_name in repository_children
 
             # Build relative paths for children (only if they exist and parent exists)
             analyzed_child_relative = \
                 None if (not in_analyzed or analyzed_relative is None) else analyzed_relative / child_name
-            archive_child_relative = \
-                None if (not in_archive or archive_relative is None) else archive_relative / child_name
+            repository_child_relative = \
+                None if (not in_repository or repository_relative is None) else repository_relative / child_name
 
-            status = self._get_node_status(analyzed_child_relative, archive_child_relative)
+            status = self._get_node_status(analyzed_child_relative, repository_child_relative)
 
             # Check if this is a directory or regular file (reconstruct absolute path only when needed)
             is_dir = False
@@ -376,8 +376,8 @@ class DiffTreeProcessor:
                 if not child_path.is_symlink():
                     is_dir = child_path.is_dir()
                     is_regular_file = child_path.is_file()
-            elif in_archive and archive_dir is not None:
-                child_path = archive_dir / child_name
+            elif in_repository and repository_dir is not None:
+                child_path = repository_dir / child_name
                 if not child_path.is_symlink():
                     is_dir = child_path.is_dir()
                     is_regular_file = child_path.is_file()
@@ -397,12 +397,12 @@ class DiffTreeProcessor:
 
             # Apply show_filter (applies to both files and directories)
             # When filtering to one side, directories are essential for showing tree structure
-            if self._show_filter == "analyzed" and status == NodeStatus.ARCHIVE_ONLY:
+            if self._show_filter == "analyzed" and status == NodeStatus.REPOSITORY_ONLY:
                 continue
-            elif self._show_filter == "archive" and status == NodeStatus.ANALYZED_ONLY:
+            elif self._show_filter == "repository" and status == NodeStatus.ANALYZED_ONLY:
                 continue
 
-            children_with_diffs.append((child_name, analyzed_child_relative, archive_child_relative, status, is_dir))
+            children_with_diffs.append((child_name, analyzed_child_relative, repository_child_relative, status, is_dir))
 
         if not children_with_diffs:
             return False
@@ -416,7 +416,7 @@ class DiffTreeProcessor:
         # Get this node's status (for conditional printing at level > 0)
         dir_status: NodeStatus | None = None
         if level > 0:
-            dir_status = self._get_node_status(analyzed_relative, archive_relative)
+            dir_status = self._get_node_status(analyzed_relative, repository_relative)
 
         # Track if we actually printed this node
         node_printed = False
@@ -508,7 +508,7 @@ class DiffTreeProcessor:
                     break
 
             # Processing a real child
-            child_name, analyzed_child_rel, archive_child_rel, status, is_dir = children_with_diffs[idx]
+            child_name, analyzed_child_rel, repository_child_rel, status, is_dir = children_with_diffs[idx]
 
             # Determine if this child is the last in the original list
             child_is_last = force_is_last or (idx == len(children_with_diffs) - 1)
@@ -542,7 +542,7 @@ class DiffTreeProcessor:
                     child_has_diffs = self._build_and_print_tree(
                         output,
                         analyzed_child_rel,
-                        archive_child_rel,
+                        repository_child_rel,
                         child_name,
                         level + 1,
                         child_is_last,
@@ -586,38 +586,38 @@ class DiffTreeProcessor:
     def run(
         self,
         analyzed_start: Path,
-        archive_start: Path,
+        repository_start: Path,
         record: DuplicateRecord
     ) -> bool:
         """Run the diff-tree operation.
 
         Args:
             analyzed_start: Starting path for comparison, relative to analyzed_base (including report target name)
-            archive_start: Starting path for comparison, relative to archive_base
+            repository_start: Starting path for comparison, relative to repository_base
             record: Duplicate record for the analyzed path
 
         Returns:
             True if differences were found, False if directories are identical
         """
-        # Check if archive_start matches any duplicate
+        # Check if repository_start matches any duplicate
         matching_duplicate = None
         for dup in record.duplicates:
-            if dup.path == archive_start:
+            if dup.path == repository_start:
                 matching_duplicate = dup
                 break
 
         if matching_duplicate is None:
-            print(f"Error: {self._archive_base / archive_start} is not a known duplicate of "
+            print(f"Error: {self._repository_base / repository_start} is not a known duplicate of "
                   f"{self._analyzed_base / analyzed_start}")
             print(f"Known duplicates:")
             for dup in record.duplicates:
-                print(f"  {self._archive_base / dup.path}")
+                print(f"  {self._repository_base / dup.path}")
             return False
 
         # Print header
         print(f"Comparing:")
         print(f"  Analyzed: {self._analyzed_base / analyzed_start}")
-        print(f"  Archive:  {self._archive_base / archive_start}")
+        print(f"  Repository:  {self._repository_base / repository_start}")
         print()
 
         # Extract the name from the starting paths to use as the root display name
@@ -629,7 +629,7 @@ class DiffTreeProcessor:
         has_diffs = self._build_and_print_tree(
             output,
             analyzed_start,  # Start from the specified analyzed path
-            archive_start,   # Start from the specified archive path
+            repository_start,   # Start from the specified repository path
             name,
             level=0,
             is_last=True,
@@ -641,19 +641,19 @@ class DiffTreeProcessor:
 
 def do_diff_tree(
         analyzed_path: Path,
-        archive_path: Path,
+        repository_path: Path,
         hide_content_match: bool = False,
         max_depth: int | None = None,
         show_filter: str = "both"
 ) -> None:
-    """Compare directory trees between an analyzed path and its duplicate in the archive.
+    """Compare directory trees between an analyzed path and its duplicate in the repository.
 
     Args:
         analyzed_path: Path to the analyzed directory (must have a report)
-        archive_path: Path to the duplicate directory in the archive
+        repository_path: Path to the duplicate directory in the repository
         hide_content_match: If True, hide files that match content but differ in metadata
         max_depth: Maximum depth to display (None = unlimited)
-        show_filter: Filter for which files to show: "both", "analyzed", or "archive"
+        show_filter: Filter for which files to show: "both", "analyzed", or "repository"
     """
     # Find report for analyzed path
     # find_report_for_path() handles path normalization and traversal
@@ -667,29 +667,29 @@ def do_diff_tree(
             print(f"Error: Analyzed path must be a directory: {analyzed_path_abs}")
         else:
             print(f"No analysis report found for: {analyzed_path_abs}")
-            print(f"Run 'arindexer analyze {analyzed_path_abs}' to generate a report.")
+            print(f"Run 'rededup analyze {analyzed_path_abs}' to generate a report.")
         return
 
     report_target, record_path = report_result
 
-    # Find archive root containing .aridx for the archive_path
-    # find_archive_for_path() handles path normalization and returns (archive_root, archive_record_path)
-    # archive_record_path is relative to archive_root and can be concatenated:
-    #   archive_root / archive_record_path == archive_path
-    archive_result = find_archive_for_path(archive_path)
-    if archive_result is None:
-        # Provide better error messages for archive_path validation issues
-        archive_path_abs = archive_path if archive_path.is_absolute() else Path.cwd() / archive_path
-        if not archive_path_abs.exists():
-            print(f"Error: Archive path does not exist: {archive_path_abs}")
-        elif not archive_path_abs.is_dir():
-            print(f"Error: Archive path must be a directory: {archive_path_abs}")
+    # Find repository root containing .rededup for the repository_path
+    # find_repository_for_path() handles path normalization and returns (repository_root, repository_record_path)
+    # repository_record_path is relative to repository_root and can be concatenated:
+    #   repository_root / repository_record_path == repository_path
+    repository_result = find_repository_for_path(repository_path)
+    if repository_result is None:
+        # Provide better error messages for repository_path validation issues
+        repository_path_abs = repository_path if repository_path.is_absolute() else Path.cwd() / repository_path
+        if not repository_path_abs.exists():
+            print(f"Error: Repository path does not exist: {repository_path_abs}")
+        elif not repository_path_abs.is_dir():
+            print(f"Error: Repository path must be a directory: {repository_path_abs}")
         else:
-            print(f"Error: No archive found containing: {archive_path_abs}")
-            print(f"Archive must be within a directory containing .aridx")
+            print(f"Error: No repository found containing: {repository_path_abs}")
+            print(f"Repository must be within a directory containing .rededup")
         return
 
-    archive_root, archive_relative = archive_result
+    repository_root, repository_relative = repository_result
     report_dir = get_report_directory_path(report_target)
 
     try:
@@ -711,28 +711,28 @@ def do_diff_tree(
                 print(f"No duplicates found for: {analyzed_path}")
                 return
 
-            # Validate that archive matches the one used in the report
-            # Use archive_id rather than path comparison, as paths can differ but represent the same archive
-            archive_settings = ArchiveSettings(archive_root)
-            archive_store = ArchiveStore(archive_settings, archive_root)
-            current_archive_id = archive_store.get_archive_id()
-            if current_archive_id != manifest.archive_id:
-                print(f"Error: Archive mismatch")
-                print(f"Provided archive has ID: {current_archive_id}")
-                print(f"Report expects archive ID: {manifest.archive_id}")
+            # Validate that repository matches the one used in the report
+            # Use repository_id rather than path comparison, as paths can differ but represent the same repository
+            repository_settings = IndexSettings(repository_root)
+            repository_store = IndexStore(repository_settings, repository_root)
+            current_repository_id = repository_store.get_repository_id()
+            if current_repository_id != manifest.repository_id:
+                print(f"Error: Repository mismatch")
+                print(f"Provided repository has ID: {current_repository_id}")
+                print(f"Report expects repository ID: {manifest.repository_id}")
                 return
 
             # Compute the bases for path resolution
             # analyzed_base is the parent of the report target
             analyzed_base = report_target.parent
-            # archive_base is the archive root (where .aridx is a direct child)
-            archive_base = archive_root
+            # repository_base is the repository root (where .rededup is a direct child)
+            repository_base = repository_root
 
             # Create processor and run diff-tree operation
             processor = DiffTreeProcessor(
                 report_store=store,
                 analyzed_base=analyzed_base,
-                archive_base=archive_base,
+                repository_base=repository_base,
                 hide_content_match=hide_content_match,
                 max_depth=max_depth,
                 show_filter=show_filter
@@ -744,7 +744,7 @@ def do_diff_tree(
 
             has_diffs = processor.run(
                 analyzed_start=analyzed_start,
-                archive_start=archive_relative,
+                repository_start=repository_relative,
                 record=record
             )
 

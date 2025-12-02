@@ -10,33 +10,33 @@ except ModuleNotFoundError:
 SETTING_FOLLOWED_SYMLINKS = 'followed_symlinks'
 
 
-class ArchiveSettings:
-    """Settings manager for archive configuration.
+class IndexSettings:
+    """Settings manager for repository configuration.
 
-    Provides a read-only key-value interface to access settings from .aridx/settings.toml.
+    Provides a read-only key-value interface to access settings from .rededup/settings.toml.
     This class is agnostic to the schema and usage of settings - it simply loads the TOML
     file and provides access to the raw data structure. Consumers of this class are
     responsible for interpreting and validating the settings according to their needs.
 
     Example:
-        settings = ArchiveSettings(archive_path)
+        settings = IndexSettings(repository_path)
         follow_list = settings.get(SETTING_FOLLOWED_SYMLINKS, [])
         hash_algorithm = settings.get('index.hash_algorithm', 'sha256')
     """
 
-    def __init__(self, archive_path: Path):
+    def __init__(self, repository_path: Path):
         """Initialize settings from TOML file.
 
-        Loads settings from .aridx/settings.toml if it exists. If the file does not exist,
+        Loads settings from .rededup/settings.toml if it exists. If the file does not exist,
         an empty settings dictionary is used, and all get() calls will return their defaults.
 
         Args:
-            archive_path: Path to archive root directory
+            repository_path: Path to repository root directory
         """
-        self._archive_path = archive_path
+        self._repository_path = repository_path
         self._settings = {}
 
-        settings_file = archive_path / '.aridx' / 'settings.toml'
+        settings_file = repository_path / '.rededup' / 'settings.toml'
         if settings_file.exists():
             with open(settings_file, 'rb') as f:
                 self._settings = tomllib.load(f)

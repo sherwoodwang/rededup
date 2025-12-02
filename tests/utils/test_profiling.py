@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer.utils.profiling import (
+from rededup.utils.profiling import (
     get_profile_dir,
     generate_profile_filename,
     profile_function,
@@ -14,25 +14,25 @@ from arindexer.utils.profiling import (
 
 class ProfilingTest(unittest.TestCase):
     def setUp(self):
-        """Save and clear ARINDEXER_PROFILE environment variable."""
-        self.original_profile_env = os.environ.get('ARINDEXER_PROFILE')
-        self.original_session_dir_env = os.environ.get('_ARINDEXER_PROFILE_SESSION_DIR')
-        if 'ARINDEXER_PROFILE' in os.environ:
-            del os.environ['ARINDEXER_PROFILE']
-        if '_ARINDEXER_PROFILE_SESSION_DIR' in os.environ:
-            del os.environ['_ARINDEXER_PROFILE_SESSION_DIR']
+        """Save and clear REDEDUP_PROFILE environment variable."""
+        self.original_profile_env = os.environ.get('REDEDUP_PROFILE')
+        self.original_session_dir_env = os.environ.get('_REDEDUP_PROFILE_SESSION_DIR')
+        if 'REDEDUP_PROFILE' in os.environ:
+            del os.environ['REDEDUP_PROFILE']
+        if '_REDEDUP_PROFILE_SESSION_DIR' in os.environ:
+            del os.environ['_REDEDUP_PROFILE_SESSION_DIR']
 
     def tearDown(self):
-        """Restore original ARINDEXER_PROFILE environment variable."""
+        """Restore original REDEDUP_PROFILE environment variable."""
         if self.original_profile_env:
-            os.environ['ARINDEXER_PROFILE'] = self.original_profile_env
-        elif 'ARINDEXER_PROFILE' in os.environ:
-            del os.environ['ARINDEXER_PROFILE']
+            os.environ['REDEDUP_PROFILE'] = self.original_profile_env
+        elif 'REDEDUP_PROFILE' in os.environ:
+            del os.environ['REDEDUP_PROFILE']
 
         if self.original_session_dir_env:
-            os.environ['_ARINDEXER_PROFILE_SESSION_DIR'] = self.original_session_dir_env
-        elif '_ARINDEXER_PROFILE_SESSION_DIR' in os.environ:
-            del os.environ['_ARINDEXER_PROFILE_SESSION_DIR']
+            os.environ['_REDEDUP_PROFILE_SESSION_DIR'] = self.original_session_dir_env
+        elif '_REDEDUP_PROFILE_SESSION_DIR' in os.environ:
+            del os.environ['_REDEDUP_PROFILE_SESSION_DIR']
 
     def test_get_profile_dir_when_not_set(self):
         """Test get_profile_dir returns None when env var not set."""
@@ -41,9 +41,10 @@ class ProfilingTest(unittest.TestCase):
     def test_get_profile_dir_when_set(self):
         """Test get_profile_dir returns path with timestamp_PID subdirectory when env var is set."""
         test_path = "/tmp/test_profile"
-        os.environ['ARINDEXER_PROFILE'] = test_path
+        os.environ['REDEDUP_PROFILE'] = test_path
         # Should return path/timestamp_pid subdirectory
         result = get_profile_dir()
+        assert result is not None
         self.assertTrue(str(result).startswith(test_path))
         # The subdirectory name should be in format: timestamp_pid
         subdir_name = result.name
@@ -97,7 +98,7 @@ class ProfilingTest(unittest.TestCase):
     def test_profile_function_enabled(self):
         """Test that function creates profile file when profiling is enabled."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ['ARINDEXER_PROFILE'] = tmpdir
+            os.environ['REDEDUP_PROFILE'] = tmpdir
 
             @profile_function
             def divide(a: int, b: int) -> float:
@@ -117,7 +118,7 @@ class ProfilingTest(unittest.TestCase):
     def test_profile_function_with_custom_prefix_enabled(self):
         """Test that function creates profile file with custom prefix."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ['ARINDEXER_PROFILE'] = tmpdir
+            os.environ['REDEDUP_PROFILE'] = tmpdir
 
             @profile_function
             def subtract(a: int, b: int) -> int:
@@ -151,7 +152,7 @@ class ProfilingTest(unittest.TestCase):
     def test_profile_function_with_exception(self):
         """Test that profile file is created even when function raises exception."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ['ARINDEXER_PROFILE'] = tmpdir
+            os.environ['REDEDUP_PROFILE'] = tmpdir
 
             @profile_function
             def failing_function() -> None:
@@ -178,7 +179,7 @@ class ProfilingTest(unittest.TestCase):
     def test_multiple_decorated_functions_have_unique_profile_files(self):
         """Test that different decorated functions create uniquely named profile files."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ['ARINDEXER_PROFILE'] = tmpdir
+            os.environ['REDEDUP_PROFILE'] = tmpdir
 
             @profile_function
             def test_func1() -> int:
@@ -210,7 +211,7 @@ class ProfilingTest(unittest.TestCase):
     def test_profile_main_creates_subdirectory(self):
         """Test that profile_main creates a subdirectory with timestamp_PID format."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ['ARINDEXER_PROFILE'] = tmpdir
+            os.environ['REDEDUP_PROFILE'] = tmpdir
 
             @profile_main
             def main_func() -> str:
@@ -241,15 +242,15 @@ class ProfilingTest(unittest.TestCase):
     def test_profile_main_sets_environment_for_workers(self):
         """Test that profile_main sets session directory environment variable for worker processes."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            os.environ['ARINDEXER_PROFILE'] = tmpdir
+            os.environ['REDEDUP_PROFILE'] = tmpdir
             # Ensure the env var is not already set
-            if '_ARINDEXER_PROFILE_SESSION_DIR' in os.environ:
-                del os.environ['_ARINDEXER_PROFILE_SESSION_DIR']
+            if '_REDEDUP_PROFILE_SESSION_DIR' in os.environ:
+                del os.environ['_REDEDUP_PROFILE_SESSION_DIR']
 
             @profile_main
             def main_func() -> str:
                 # Check that the environment variable was set during execution
-                return os.environ.get('_ARINDEXER_PROFILE_SESSION_DIR', 'not_set')
+                return os.environ.get('_REDEDUP_PROFILE_SESSION_DIR', 'not_set')
 
             result = main_func()
             self.assertNotEqual(result, 'not_set', "Session directory environment variable should be set")

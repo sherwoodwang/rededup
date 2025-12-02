@@ -2,12 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from arindexer.store.archive_store import ArchiveStore, FileSignature
-from arindexer.store.archive_settings import ArchiveSettings
+from rededup.index.store import IndexStore, FileSignature
+from rededup.index.settings import IndexSettings
 
 
-class InterceptedArchiveStore(ArchiveStore):
-    """ArchiveStore subclass with controllable hash function for testing."""
+class InterceptedIndexStore(IndexStore):
+    """IndexStore subclass with controllable hash function for testing."""
 
     # Class-level hash mapping for deterministic testing
     # Maps path string to 16-byte hash value
@@ -19,11 +19,11 @@ class InterceptedArchiveStore(ArchiveStore):
         path_str = '/'.join(str(part) for part in path.parts)
 
         # Use mapping if available, otherwise fall back to parent implementation
-        if path_str in InterceptedArchiveStore.long_hash_mapping:
-            return InterceptedArchiveStore.long_hash_mapping[path_str]
+        if path_str in InterceptedIndexStore.long_hash_mapping:
+            return InterceptedIndexStore.long_hash_mapping[path_str]
 
         # Default: use parent implementation
-        return ArchiveStore._compute_long_path_hash(path)
+        return IndexStore._compute_long_path_hash(path)
 
 
 class FileSignatureCollisionTest(unittest.TestCase):
@@ -31,16 +31,16 @@ class FileSignatureCollisionTest(unittest.TestCase):
 
     def setUp(self):
         """Clear hash mapping before each test."""
-        InterceptedArchiveStore.long_hash_mapping = {}
+        InterceptedIndexStore.long_hash_mapping = {}
 
     def test_register_file_no_collision(self):
         """Test registering files without hash collision."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
-            settings = ArchiveSettings(archive_path)
-            with InterceptedArchiveStore(settings, archive_path, create=True) as store:
+            settings = IndexSettings(repository_path)
+            with InterceptedIndexStore(settings, repository_path, create=True) as store:
                 # Register two files with different paths (no collision setup)
                 path1 = Path('file1.txt')
                 path2 = Path('file2.txt')
@@ -64,18 +64,18 @@ class FileSignatureCollisionTest(unittest.TestCase):
     def test_register_file_with_collision(self):
         """Test registering files that have the same path hash."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
             # Set up collision: both paths hash to same value
             collision_hash = b'\x00' * 16
-            InterceptedArchiveStore.long_hash_mapping = {
+            InterceptedIndexStore.long_hash_mapping = {
                 'file1.txt': collision_hash,
                 'file2.txt': collision_hash,
             }
 
-            settings = ArchiveSettings(archive_path)
-            with InterceptedArchiveStore(settings, archive_path, create=True) as store:
+            settings = IndexSettings(repository_path)
+            with InterceptedIndexStore(settings, repository_path, create=True) as store:
                 path1 = Path('file1.txt')
                 path2 = Path('file2.txt')
                 sig1 = FileSignature(path1, b'digest1', 1000, 0)
@@ -98,18 +98,18 @@ class FileSignatureCollisionTest(unittest.TestCase):
     def test_update_file_with_collision(self):
         """Test updating a file when there are hash collisions."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
             # Set up collision
             collision_hash = b'\x00' * 16
-            InterceptedArchiveStore.long_hash_mapping = {
+            InterceptedIndexStore.long_hash_mapping = {
                 'file1.txt': collision_hash,
                 'file2.txt': collision_hash,
             }
 
-            settings = ArchiveSettings(archive_path)
-            with InterceptedArchiveStore(settings, archive_path, create=True) as store:
+            settings = IndexSettings(repository_path)
+            with InterceptedIndexStore(settings, repository_path, create=True) as store:
                 path1 = Path('file1.txt')
                 path2 = Path('file2.txt')
 
@@ -138,19 +138,19 @@ class FileSignatureCollisionTest(unittest.TestCase):
     def test_deregister_file_with_collision(self):
         """Test deregistering a file when there are hash collisions."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
             # Set up collision for three files
             collision_hash = b'\x00' * 16
-            InterceptedArchiveStore.long_hash_mapping = {
+            InterceptedIndexStore.long_hash_mapping = {
                 'file1.txt': collision_hash,
                 'file2.txt': collision_hash,
                 'file3.txt': collision_hash,
             }
 
-            settings = ArchiveSettings(archive_path)
-            with InterceptedArchiveStore(settings, archive_path, create=True) as store:
+            settings = IndexSettings(repository_path)
+            with InterceptedIndexStore(settings, repository_path, create=True) as store:
                 path1 = Path('file1.txt')
                 path2 = Path('file2.txt')
                 path3 = Path('file3.txt')
@@ -178,18 +178,18 @@ class FileSignatureCollisionTest(unittest.TestCase):
     def test_list_files_with_collision(self):
         """Test listing files when there are hash collisions."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
             # Set up collision for path1 and path2, but not path3
             collision_hash = b'\x00' * 16
-            InterceptedArchiveStore.long_hash_mapping = {
+            InterceptedIndexStore.long_hash_mapping = {
                 'file1.txt': collision_hash,
                 'file2.txt': collision_hash,
             }
 
-            settings = ArchiveSettings(archive_path)
-            with InterceptedArchiveStore(settings, archive_path, create=True) as store:
+            settings = IndexSettings(repository_path)
+            with InterceptedIndexStore(settings, repository_path, create=True) as store:
                 path1 = Path('file1.txt')
                 path2 = Path('file2.txt')
                 path3 = Path('dir/file3.txt')
@@ -215,17 +215,17 @@ class FileSignatureCollisionTest(unittest.TestCase):
     def test_collision_with_many_files(self):
         """Test handling many files with the same hash collision."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
             # Create 10 files that all collide
             collision_hash = b'\x00' * 16
-            InterceptedArchiveStore.long_hash_mapping = {
+            InterceptedIndexStore.long_hash_mapping = {
                 f'file{i}.txt': collision_hash for i in range(10)
             }
 
-            settings = ArchiveSettings(archive_path)
-            with InterceptedArchiveStore(settings, archive_path, create=True) as store:
+            settings = IndexSettings(repository_path)
+            with InterceptedIndexStore(settings, repository_path, create=True) as store:
                 paths = [Path(f'file{i}.txt') for i in range(10)]
 
                 # Register all files
@@ -244,19 +244,19 @@ class FileSignatureCollisionTest(unittest.TestCase):
     def test_deregister_nonexistent_file_with_collision(self):
         """Test deregistering a file that doesn't exist when there are collisions."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
             # Set up collision
             collision_hash = b'\x00' * 16
-            InterceptedArchiveStore.long_hash_mapping = {
+            InterceptedIndexStore.long_hash_mapping = {
                 'file1.txt': collision_hash,
                 'file2.txt': collision_hash,
                 'file_nonexistent.txt': collision_hash,
             }
 
-            settings = ArchiveSettings(archive_path)
-            with InterceptedArchiveStore(settings, archive_path, create=True) as store:
+            settings = IndexSettings(repository_path)
+            with InterceptedIndexStore(settings, repository_path, create=True) as store:
                 path1 = Path('file1.txt')
                 path2 = Path('file2.txt')
                 path_nonexistent = Path('file_nonexistent.txt')
@@ -280,18 +280,18 @@ class FileSignatureCollisionTest(unittest.TestCase):
     def test_lookup_nonexistent_file_with_collision(self):
         """Test looking up a file that doesn't exist when there are collisions."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
             # Set up collision
             collision_hash = b'\x00' * 16
-            InterceptedArchiveStore.long_hash_mapping = {
+            InterceptedIndexStore.long_hash_mapping = {
                 'file1.txt': collision_hash,
                 'file_nonexistent.txt': collision_hash,
             }
 
-            settings = ArchiveSettings(archive_path)
-            with InterceptedArchiveStore(settings, archive_path, create=True) as store:
+            settings = IndexSettings(repository_path)
+            with InterceptedIndexStore(settings, repository_path, create=True) as store:
                 path1 = Path('file1.txt')
                 path_nonexistent = Path('file_nonexistent.txt')
 
@@ -306,18 +306,18 @@ class FileSignatureCollisionTest(unittest.TestCase):
     def test_inspect_output_with_collision(self):
         """Test that inspect output correctly shows sequence numbers for colliding paths."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'test_archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'test_repository'
+            repository_path.mkdir()
 
             # Set up collision
             collision_hash = b'\x00' * 16
-            InterceptedArchiveStore.long_hash_mapping = {
+            InterceptedIndexStore.long_hash_mapping = {
                 'file1.txt': collision_hash,
                 'file2.txt': collision_hash,
             }
 
-            settings = ArchiveSettings(archive_path)
-            with InterceptedArchiveStore(settings, archive_path, create=True) as store:
+            settings = IndexSettings(repository_path)
+            with InterceptedIndexStore(settings, repository_path, create=True) as store:
                 path1 = Path('file1.txt')
                 path2 = Path('file2.txt')
 

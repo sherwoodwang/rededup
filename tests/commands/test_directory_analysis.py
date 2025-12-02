@@ -5,9 +5,9 @@ from pathlib import Path
 
 import plyvel
 
-from arindexer import Archive
-from arindexer.report.store import DuplicateRecord
-from arindexer.utils.processor import Processor
+from rededup import Repository
+from rededup.report.store import DuplicateRecord
+from rededup.utils.processor import Processor
 
 from ..test_utils import copy_times, tweak_times
 
@@ -16,15 +16,15 @@ class DirectoryAnalysisTest(unittest.TestCase):
     """Tests for directory analysis with database verification."""
 
     def test_analyze_directory_exact_match(self):
-        """Analyze directory that exactly matches an archive directory."""
+        """Analyze directory that exactly matches an repository directory."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'mydir'
-            archive_dir.mkdir()
-            file1 = archive_dir / 'file1.txt'
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'mydir'
+            repository_dir.mkdir()
+            file1 = repository_dir / 'file1.txt'
             file1.write_bytes(b'content1')
-            file2 = archive_dir / 'file2.txt'
+            file2 = repository_dir / 'file2.txt'
             file2.write_bytes(b'content2')
 
             target_path = Path(tmpdir) / 'target'
@@ -37,16 +37,16 @@ class DirectoryAnalysisTest(unittest.TestCase):
             target_file2 = target_dir / 'file2.txt'
             target_file2.write_bytes(b'content2')
             copy_times(file2, target_file2)
-            copy_times(archive_dir, target_dir)
+            copy_times(repository_dir, target_dir)
 
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
 
                     # Run analysis
-                    archive.analyze([target_dir])
+                    repository.analyze([target_dir])
 
             # Verify database contents for directory
             db = plyvel.DB(str(report_dir / 'database'))
@@ -75,16 +75,16 @@ class DirectoryAnalysisTest(unittest.TestCase):
             finally:
                 db.close()
 
-    def test_analyze_directory_with_extra_files_in_archive(self):
-        """Analyze directory where archive has extra files (superset)."""
+    def test_analyze_directory_with_extra_files_in_repository(self):
+        """Analyze directory where repository has extra files (superset)."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'bigdir'
-            archive_dir.mkdir()
-            (archive_dir / 'file1.txt').write_bytes(b'content1')
-            (archive_dir / 'file2.txt').write_bytes(b'content2')
-            (archive_dir / 'extra.txt').write_bytes(b'extra')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'bigdir'
+            repository_dir.mkdir()
+            (repository_dir / 'file1.txt').write_bytes(b'content1')
+            (repository_dir / 'file2.txt').write_bytes(b'content2')
+            (repository_dir / 'extra.txt').write_bytes(b'extra')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -92,19 +92,19 @@ class DirectoryAnalysisTest(unittest.TestCase):
             target_dir.mkdir()
             target_file1 = target_dir / 'file1.txt'
             target_file1.write_bytes(b'content1')
-            copy_times(archive_dir / 'file1.txt', target_file1)
+            copy_times(repository_dir / 'file1.txt', target_file1)
             target_file2 = target_dir / 'file2.txt'
             target_file2.write_bytes(b'content2')
-            copy_times(archive_dir / 'file2.txt', target_file2)
+            copy_times(repository_dir / 'file2.txt', target_file2)
 
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
 
                     # Run analysis
-                    archive.analyze([target_dir])
+                    repository.analyze([target_dir])
 
             # Verify is_superset is true but is_identical is false
             db = plyvel.DB(str(report_dir / 'database'))
@@ -119,9 +119,9 @@ class DirectoryAnalysisTest(unittest.TestCase):
                             comparison = record.duplicates[0]
                             if 'bigdir' in str(comparison.path):
                                 found_dir_record = True
-                                # Archive has extra files, so not identical
+                                # Repository has extra files, so not identical
                                 self.assertFalse(comparison.is_identical)
-                                # But archive contains all analyzed files
+                                # But repository contains all analyzed files
                                 self.assertTrue(comparison.is_superset)
                                 # Directory with 2 matching files should have duplicated_items=2
                                 self.assertEqual(2, comparison.duplicated_items)
@@ -136,12 +136,12 @@ class DirectoryAnalysisTest(unittest.TestCase):
     def test_analyze_directory_with_symlinks(self):
         """Analyze directory containing symbolic links."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'linkdir'
-            archive_dir.mkdir()
-            (archive_dir / 'file.txt').write_bytes(b'content')
-            (archive_dir / 'link').symlink_to('file.txt')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'linkdir'
+            repository_dir.mkdir()
+            (repository_dir / 'file.txt').write_bytes(b'content')
+            (repository_dir / 'link').symlink_to('file.txt')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -149,17 +149,17 @@ class DirectoryAnalysisTest(unittest.TestCase):
             target_dir.mkdir()
             target_file = target_dir / 'file.txt'
             target_file.write_bytes(b'content')
-            copy_times(archive_dir / 'file.txt', target_file)
+            copy_times(repository_dir / 'file.txt', target_file)
             (target_dir / 'link').symlink_to('file.txt')
 
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
 
                     # Run analysis
-                    archive.analyze([target_dir])
+                    repository.analyze([target_dir])
 
             # Verify symlinks were compared correctly
             db = plyvel.DB(str(report_dir / 'database'))
@@ -189,20 +189,20 @@ class DirectoryAnalysisTest(unittest.TestCase):
         """Test that deferred items (symlinks) matching candidates are counted in duplicated_items.
 
         This test verifies that when deferred items match their corresponding candidates
-        in the archive, they are properly counted in the duplicated_items counter.
+        in the repository, they are properly counted in the duplicated_items counter.
         This ensures the bug fix (collecting matched_count from _compare_deferred_item)
         works correctly.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'dir_with_links'
-            archive_dir.mkdir()
-            # Create files and symlinks in archive
-            (archive_dir / 'file1.txt').write_bytes(b'content1')
-            (archive_dir / 'file2.txt').write_bytes(b'content2')
-            (archive_dir / 'link1').symlink_to('file1.txt')
-            (archive_dir / 'link2').symlink_to('file2.txt')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'dir_with_links'
+            repository_dir.mkdir()
+            # Create files and symlinks in repository
+            (repository_dir / 'file1.txt').write_bytes(b'content1')
+            (repository_dir / 'file2.txt').write_bytes(b'content2')
+            (repository_dir / 'link1').symlink_to('file1.txt')
+            (repository_dir / 'link2').symlink_to('file2.txt')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -211,19 +211,19 @@ class DirectoryAnalysisTest(unittest.TestCase):
             # Create matching structure in target
             target_file1 = target_dir / 'file1.txt'
             target_file1.write_bytes(b'content1')
-            copy_times(archive_dir / 'file1.txt', target_file1)
+            copy_times(repository_dir / 'file1.txt', target_file1)
             target_file2 = target_dir / 'file2.txt'
             target_file2.write_bytes(b'content2')
-            copy_times(archive_dir / 'file2.txt', target_file2)
+            copy_times(repository_dir / 'file2.txt', target_file2)
             (target_dir / 'link1').symlink_to('file1.txt')
             (target_dir / 'link2').symlink_to('file2.txt')
 
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Verify deferred items (symlinks) are counted
             db = plyvel.DB(str(report_dir / 'database'))
@@ -256,30 +256,30 @@ class DirectoryAnalysisTest(unittest.TestCase):
         correctly distinguishes between matched and unmatched deferred items.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'limited_dir'
-            archive_dir.mkdir()
-            # Archive only has a regular file, no symlinks
-            (archive_dir / 'file1.txt').write_bytes(b'content1')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'limited_dir'
+            repository_dir.mkdir()
+            # Repository only has a regular file, no symlinks
+            (repository_dir / 'file1.txt').write_bytes(b'content1')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
             target_dir = target_path / 'full_dir'
             target_dir.mkdir()
-            # Target has a regular file + symlinks (no matching symlinks in archive)
+            # Target has a regular file + symlinks (no matching symlinks in repository)
             target_file1 = target_dir / 'file1.txt'
             target_file1.write_bytes(b'content1')
-            copy_times(archive_dir / 'file1.txt', target_file1)
+            copy_times(repository_dir / 'file1.txt', target_file1)
             (target_dir / 'link1').symlink_to('file1.txt')
             (target_dir / 'link2').symlink_to('file1.txt')
 
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Verify deferred items without matches are not counted
             db = plyvel.DB(str(report_dir / 'database'))
@@ -294,7 +294,7 @@ class DirectoryAnalysisTest(unittest.TestCase):
                             found = True
                             comparison = record.duplicates[0]
                             # Should have only 1 duplicated_item (the file)
-                            # The 2 symlinks should not be counted since archive has no matching symlinks
+                            # The 2 symlinks should not be counted since repository has no matching symlinks
                             self.assertEqual(1, comparison.duplicated_items,
                                 "duplicated_items should only count matching items, not unmatched symlinks")
                             break
@@ -306,25 +306,25 @@ class DirectoryAnalysisTest(unittest.TestCase):
                 db.close()
 
     def test_duplicated_size_semantics_with_partial_matches(self):
-        """Test that duplicated_size is correctly calculated when archive dirs match different file subsets.
+        """Test that duplicated_size is correctly calculated when repository dirs match different file subsets.
 
         This test verifies the semantic distinction between:
         - DuplicateRecord.duplicated_size: deduplicated size (each file counted once)
-        - DuplicateMatch.duplicated_size: size of files in specific archive path
+        - DuplicateMatch.duplicated_size: size of files in specific repository path
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
 
-            # Archive has 2 directories with different file subsets
+            # Repository has 2 directories with different file subsets
             # dir1 has files A and B
-            dir1 = archive_path / 'dir1'
+            dir1 = repository_path / 'dir1'
             dir1.mkdir()
             (dir1 / 'fileA.txt').write_bytes(b'A' * 100)  # 100 bytes
             (dir1 / 'fileB.txt').write_bytes(b'B' * 200)  # 200 bytes
 
             # dir2 has files A, B, and C
-            dir2 = archive_path / 'dir2'
+            dir2 = repository_path / 'dir2'
             dir2.mkdir()
             (dir2 / 'fileA.txt').write_bytes(b'A' * 100)  # 100 bytes
             (dir2 / 'fileB.txt').write_bytes(b'B' * 200)  # 200 bytes
@@ -348,9 +348,9 @@ class DirectoryAnalysisTest(unittest.TestCase):
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Verify duplicated_size semantics
             db = plyvel.DB(str(report_dir / 'database'))
@@ -366,11 +366,11 @@ class DirectoryAnalysisTest(unittest.TestCase):
 
                             # DuplicateRecord.duplicated_size should be the sum of ALL files
                             # with ANY duplicates (A + B + C = 100 + 200 + 300 = 600)
-                            # Each file is counted ONCE regardless of how many archive dirs have it
+                            # Each file is counted ONCE regardless of how many repository dirs have it
                             self.assertEqual(600, record.duplicated_size,
                                            "DuplicateRecord.duplicated_size should count each file once")
 
-                            # Find the DuplicateMatch for each archive directory
+                            # Find the DuplicateMatch for each repository directory
                             for comparison in record.duplicates:
                                 if 'dir1' in str(comparison.path):
                                     # dir1 matches files A and B (100 + 200 = 300)
@@ -381,7 +381,7 @@ class DirectoryAnalysisTest(unittest.TestCase):
                                     self.assertEqual(600, comparison.duplicated_size,
                                                    "DuplicateMatch for dir2 should be A + B + C")
 
-                            # Should have found both archive directories as duplicates
+                            # Should have found both repository directories as duplicates
                             self.assertEqual(2, len(record.duplicates))
                             break
                     except Exception as e:
@@ -394,24 +394,24 @@ class DirectoryAnalysisTest(unittest.TestCase):
     def test_analyze_directory_with_nested_subdirectories(self):
         """Test that deferred subdirectories are recursively compared correctly."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
 
-            # Create archive directory with nested subdirectories
-            archive_dir = archive_path / 'parent'
-            archive_dir.mkdir()
-            (archive_dir / 'file1.txt').write_bytes(b'content1')
+            # Create repository directory with nested subdirectories
+            repository_dir = repository_path / 'parent'
+            repository_dir.mkdir()
+            (repository_dir / 'file1.txt').write_bytes(b'content1')
 
             # Create nested subdirectory with files
-            archive_subdir = archive_dir / 'subdir'
-            archive_subdir.mkdir()
-            (archive_subdir / 'file2.txt').write_bytes(b'content2')
-            (archive_subdir / 'file3.txt').write_bytes(b'content3')
+            repository_subdir = repository_dir / 'subdir'
+            repository_subdir.mkdir()
+            (repository_subdir / 'file2.txt').write_bytes(b'content2')
+            (repository_subdir / 'file3.txt').write_bytes(b'content3')
 
             # Create deeply nested subdirectory
-            archive_deep = archive_subdir / 'deep'
-            archive_deep.mkdir()
-            (archive_deep / 'file4.txt').write_bytes(b'content4')
+            repository_deep = repository_subdir / 'deep'
+            repository_deep.mkdir()
+            (repository_deep / 'file4.txt').write_bytes(b'content4')
 
             # Create target directory with same structure
             target_path = Path(tmpdir) / 'target'
@@ -420,31 +420,31 @@ class DirectoryAnalysisTest(unittest.TestCase):
             target_dir.mkdir()
             target_file1 = target_dir / 'file1.txt'
             target_file1.write_bytes(b'content1')
-            copy_times(archive_dir / 'file1.txt', target_file1)
+            copy_times(repository_dir / 'file1.txt', target_file1)
 
             # Create nested subdirectory
             target_subdir = target_dir / 'subdir'
             target_subdir.mkdir()
             target_file2 = target_subdir / 'file2.txt'
             target_file2.write_bytes(b'content2')
-            copy_times(archive_subdir / 'file2.txt', target_file2)
+            copy_times(repository_subdir / 'file2.txt', target_file2)
             target_file3 = target_subdir / 'file3.txt'
             target_file3.write_bytes(b'content3')
-            copy_times(archive_subdir / 'file3.txt', target_file3)
+            copy_times(repository_subdir / 'file3.txt', target_file3)
 
             # Create deeply nested subdirectory
             target_deep = target_subdir / 'deep'
             target_deep.mkdir()
             target_file4 = target_deep / 'file4.txt'
             target_file4.write_bytes(b'content4')
-            copy_times(archive_deep / 'file4.txt', target_file4)
+            copy_times(repository_deep / 'file4.txt', target_file4)
 
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Verify nested subdirectory comparison worked
             db = plyvel.DB(str(report_dir / 'database'))
@@ -476,27 +476,27 @@ class DirectoryAnalysisTest(unittest.TestCase):
         """Test that total_size and total_items include files without duplicates.
 
         This test addresses a bug where total_size and total_items only counted
-        files that had duplicates in the archive, excluding files without duplicates.
+        files that had duplicates in the repository, excluding files without duplicates.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'partial_match_dir'
-            archive_dir.mkdir()
-            # Only file1 exists in archive
-            (archive_dir / 'file1.txt').write_bytes(b'content1')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'partial_match_dir'
+            repository_dir.mkdir()
+            # Only file1 exists in repository
+            (repository_dir / 'file1.txt').write_bytes(b'content1')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
             target_dir = target_path / 'mixed_dir'
             target_dir.mkdir()
 
-            # file1 has duplicate in archive
+            # file1 has duplicate in repository
             target_file1 = target_dir / 'file1.txt'
             target_file1.write_bytes(b'content1')
-            copy_times(archive_dir / 'file1.txt', target_file1)
+            copy_times(repository_dir / 'file1.txt', target_file1)
 
-            # file2 and file3 have NO duplicates in archive
+            # file2 and file3 have NO duplicates in repository
             target_file2 = target_dir / 'file2.txt'
             target_file2.write_bytes(b'unique content 2')
             target_file3 = target_dir / 'file3.txt'
@@ -505,9 +505,9 @@ class DirectoryAnalysisTest(unittest.TestCase):
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Verify total_size and total_items include ALL files, not just duplicates
             db = plyvel.DB(str(report_dir / 'database'))
@@ -545,12 +545,12 @@ class DirectoryAnalysisTest(unittest.TestCase):
         causing them to be excluded from directory totals.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'linkdir'
-            archive_dir.mkdir()
-            (archive_dir / 'file.txt').write_bytes(b'content')
-            (archive_dir / 'link').symlink_to('file.txt')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'linkdir'
+            repository_dir.mkdir()
+            (repository_dir / 'file.txt').write_bytes(b'content')
+            (repository_dir / 'link').symlink_to('file.txt')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -558,15 +558,15 @@ class DirectoryAnalysisTest(unittest.TestCase):
             target_dir.mkdir()
             target_file = target_dir / 'file.txt'
             target_file.write_bytes(b'content')
-            copy_times(archive_dir / 'file.txt', target_file)
+            copy_times(repository_dir / 'file.txt', target_file)
             (target_dir / 'link').symlink_to('file.txt')
 
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Verify symlinks are included in totals
             db = plyvel.DB(str(report_dir / 'database'))
@@ -596,20 +596,20 @@ class DirectoryAnalysisTest(unittest.TestCase):
                 db.close()
 
     def test_is_superset_false_when_metadata_differs(self):
-        """Test that is_superset is False when archive has extra files AND metadata differs.
+        """Test that is_superset is False when repository has extra files AND metadata differs.
 
         This test addresses a bug where is_superset calculation didn't properly check
         metadata matching - it should be False if metadata doesn't match, even if all
-        analyzed items are present in the archive.
+        analyzed items are present in the repository.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'bigdir'
-            archive_dir.mkdir()
-            (archive_dir / 'file1.txt').write_bytes(b'content1')
-            (archive_dir / 'file2.txt').write_bytes(b'content2')
-            (archive_dir / 'extra.txt').write_bytes(b'extra')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'bigdir'
+            repository_dir.mkdir()
+            (repository_dir / 'file1.txt').write_bytes(b'content1')
+            (repository_dir / 'file2.txt').write_bytes(b'content2')
+            (repository_dir / 'extra.txt').write_bytes(b'extra')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -617,19 +617,19 @@ class DirectoryAnalysisTest(unittest.TestCase):
             target_dir.mkdir()
             target_file1 = target_dir / 'file1.txt'
             target_file1.write_bytes(b'content1')
-            copy_times(archive_dir / 'file1.txt', target_file1)
+            copy_times(repository_dir / 'file1.txt', target_file1)
             target_file2 = target_dir / 'file2.txt'
             target_file2.write_bytes(b'content2')
             # Copy times first, then tweak so metadata doesn't match
-            copy_times(archive_dir / 'file2.txt', target_file2)
+            copy_times(repository_dir / 'file2.txt', target_file2)
             tweak_times(target_file2, -3600_000_000_000)  # Shift by -1 hour in nanoseconds
 
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Verify is_superset is False when metadata differs
             db = plyvel.DB(str(report_dir / 'database'))
@@ -646,7 +646,7 @@ class DirectoryAnalysisTest(unittest.TestCase):
                                 found_dir_record = True
                                 # Not identical (extra files)
                                 self.assertFalse(comparison.is_identical,
-                                    "is_identical should be False when archive has extra files")
+                                    "is_identical should be False when repository has extra files")
                                 # is_superset should be False because metadata doesn't match
                                 self.assertFalse(comparison.is_superset,
                                     "is_superset should be False when metadata doesn't match")
@@ -658,21 +658,21 @@ class DirectoryAnalysisTest(unittest.TestCase):
             finally:
                 db.close()
 
-    def test_is_superset_true_when_archive_has_extras_but_metadata_matches(self):
-        """Test that is_superset is True when archive has extra files but all metadata matches.
+    def test_is_superset_true_when_repository_has_extras_but_metadata_matches(self):
+        """Test that is_superset is True when repository has extra files but all metadata matches.
 
         This test addresses a bug where is_superset was incorrectly calculated based on
         structure differences rather than checking if all analyzed items are present with
         matching metadata.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'bigdir'
-            archive_dir.mkdir()
-            (archive_dir / 'file1.txt').write_bytes(b'content1')
-            (archive_dir / 'file2.txt').write_bytes(b'content2')
-            (archive_dir / 'extra.txt').write_bytes(b'extra')
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'bigdir'
+            repository_dir.mkdir()
+            (repository_dir / 'file1.txt').write_bytes(b'content1')
+            (repository_dir / 'file2.txt').write_bytes(b'content2')
+            (repository_dir / 'extra.txt').write_bytes(b'extra')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -680,18 +680,18 @@ class DirectoryAnalysisTest(unittest.TestCase):
             target_dir.mkdir()
             target_file1 = target_dir / 'file1.txt'
             target_file1.write_bytes(b'content1')
-            copy_times(archive_dir / 'file1.txt', target_file1)
+            copy_times(repository_dir / 'file1.txt', target_file1)
             target_file2 = target_dir / 'file2.txt'
             target_file2.write_bytes(b'content2')
-            copy_times(archive_dir / 'file2.txt', target_file2)
-            copy_times(archive_dir, target_dir)
+            copy_times(repository_dir / 'file2.txt', target_file2)
+            copy_times(repository_dir, target_dir)
 
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Verify is_superset is True when all analyzed items present with matching metadata
             db = plyvel.DB(str(report_dir / 'database'))
@@ -706,9 +706,9 @@ class DirectoryAnalysisTest(unittest.TestCase):
                             comparison = record.duplicates[0]
                             if 'bigdir' in str(comparison.path):
                                 found_dir_record = True
-                                # Not identical (extra files in archive)
+                                # Not identical (extra files in repository)
                                 self.assertFalse(comparison.is_identical,
-                                    "is_identical should be False when archive has extra files")
+                                    "is_identical should be False when repository has extra files")
                                 # But is_superset should be True (all items present, metadata matches)
                                 self.assertTrue(comparison.is_superset,
                                     "is_superset should be True when all analyzed items are present with matching metadata")
@@ -732,16 +732,16 @@ class DirectoryAnalysisTest(unittest.TestCase):
         reducer.duplicated_items = 1 for matched non-directory items.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'broken_link_dir'
-            archive_dir.mkdir()
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'broken_link_dir'
+            repository_dir.mkdir()
             # Create regular file
-            (archive_dir / 'file.txt').write_bytes(b'content')
+            (repository_dir / 'file.txt').write_bytes(b'content')
             # Create broken symlink (target doesn't exist)
-            (archive_dir / 'broken_link').symlink_to('/nonexistent/target')
+            (repository_dir / 'broken_link').symlink_to('/nonexistent/target')
             # Create another broken symlink with different target
-            (archive_dir / 'broken_link2').symlink_to('/another/nonexistent')
+            (repository_dir / 'broken_link2').symlink_to('/another/nonexistent')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -750,23 +750,23 @@ class DirectoryAnalysisTest(unittest.TestCase):
             # Create matching regular file
             target_file = target_dir / 'file.txt'
             target_file.write_bytes(b'content')
-            copy_times(archive_dir / 'file.txt', target_file)
+            copy_times(repository_dir / 'file.txt', target_file)
             # Create broken symlinks with matching targets
             target_link = target_dir / 'broken_link'
             target_link.symlink_to('/nonexistent/target')
-            copy_times(archive_dir / 'broken_link', target_link)
+            copy_times(repository_dir / 'broken_link', target_link)
             target_link2 = target_dir / 'broken_link2'
             target_link2.symlink_to('/another/nonexistent')
-            copy_times(archive_dir / 'broken_link2', target_link2)
+            copy_times(repository_dir / 'broken_link2', target_link2)
             # Copy directory mtime
-            copy_times(archive_dir, target_dir)
+            copy_times(repository_dir, target_dir)
 
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Verify broken symlinks are counted correctly
             db = plyvel.DB(str(report_dir / 'database'))
@@ -804,18 +804,18 @@ class DirectoryAnalysisTest(unittest.TestCase):
         """Test that broken symlinks are NOT counted in duplicated_items when targets differ.
 
         This test verifies that broken symlinks with different targets between
-        analyzed and archive are not counted as matches, ensuring the fix for
+        analyzed and repository are not counted as matches, ensuring the fix for
         duplicated_items counting works correctly in the negative case.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            archive_dir = archive_path / 'link_dir'
-            archive_dir.mkdir()
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            repository_dir = repository_path / 'link_dir'
+            repository_dir.mkdir()
             # Create regular file
-            (archive_dir / 'file.txt').write_bytes(b'content')
-            # Create broken symlink in archive
-            (archive_dir / 'link').symlink_to('/archive/target')
+            (repository_dir / 'file.txt').write_bytes(b'content')
+            # Create broken symlink in repository
+            (repository_dir / 'link').symlink_to('/repository/target')
 
             target_path = Path(tmpdir) / 'target'
             target_path.mkdir()
@@ -824,16 +824,16 @@ class DirectoryAnalysisTest(unittest.TestCase):
             # Create matching regular file
             target_file = target_dir / 'file.txt'
             target_file.write_bytes(b'content')
-            copy_times(archive_dir / 'file.txt', target_file)
+            copy_times(repository_dir / 'file.txt', target_file)
             # Create broken symlink with DIFFERENT target
             (target_dir / 'link').symlink_to('/analyzed/different_target')
 
             report_dir = target_dir.parent / (target_dir.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Verify broken symlinks with different targets are not counted
             db = plyvel.DB(str(report_dir / 'database'))
@@ -874,27 +874,27 @@ class DirectoryAnalysisTest(unittest.TestCase):
         immediate child names, not propagating non-identical status from descendants.
 
         Scenario:
-        - Parent directory has same immediate children in both analyzed and archive
+        - Parent directory has same immediate children in both analyzed and repository
         - But a deeply nested descendant file differs
         - The parent directory should be marked as NOT identical
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
 
-            # Create archive directory structure
-            archive_parent = archive_path / 'parent'
-            archive_parent.mkdir()
-            (archive_parent / 'file1.txt').write_bytes(b'content1')
+            # Create repository directory structure
+            repository_parent = repository_path / 'parent'
+            repository_parent.mkdir()
+            (repository_parent / 'file1.txt').write_bytes(b'content1')
 
             # Create nested structure
-            archive_level2 = archive_parent / 'level2'
-            archive_level2.mkdir()
-            (archive_level2 / 'file2.txt').write_bytes(b'identical_content')
+            repository_level2 = repository_parent / 'level2'
+            repository_level2.mkdir()
+            (repository_level2 / 'file2.txt').write_bytes(b'identical_content')
 
-            archive_level3 = archive_level2 / 'level3'
-            archive_level3.mkdir()
-            (archive_level3 / 'deep_file.txt').write_bytes(b'archive_version')
+            repository_level3 = repository_level2 / 'level3'
+            repository_level3.mkdir()
+            (repository_level3 / 'deep_file.txt').write_bytes(b'repository_version')
 
             # Create target directory with same structure
             target_path = Path(tmpdir) / 'target'
@@ -903,28 +903,28 @@ class DirectoryAnalysisTest(unittest.TestCase):
             target_parent.mkdir()
             target_file1 = target_parent / 'file1.txt'
             target_file1.write_bytes(b'content1')
-            copy_times(archive_parent / 'file1.txt', target_file1)
+            copy_times(repository_parent / 'file1.txt', target_file1)
 
             # Create nested structure with same names
             target_level2 = target_parent / 'level2'
             target_level2.mkdir()
             target_file2 = target_level2 / 'file2.txt'
             target_file2.write_bytes(b'identical_content')
-            copy_times(archive_level2 / 'file2.txt', target_file2)
+            copy_times(repository_level2 / 'file2.txt', target_file2)
 
             target_level3 = target_level2 / 'level3'
             target_level3.mkdir()
-            # This file has DIFFERENT content than archive version
+            # This file has DIFFERENT content than repository version
             target_deep = target_level3 / 'deep_file.txt'
             target_deep.write_bytes(b'analyzed_version')
-            copy_times(archive_level3 / 'deep_file.txt', target_deep)
+            copy_times(repository_level3 / 'deep_file.txt', target_deep)
 
             report_dir = target_parent.parent / (target_parent.name + '.report')
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_parent])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_parent])
 
             # Verify parent directory is NOT marked as identical
             db = plyvel.DB(str(report_dir / 'database'))
@@ -960,22 +960,22 @@ class DirectoryAnalysisTest(unittest.TestCase):
         up to the root are marked as non-identical.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
 
             # Create deep nesting with files at each level to ensure matching
-            archive_l1 = archive_path / 'l1'
-            archive_l1.mkdir()
-            (archive_l1 / 'file_l1.txt').write_bytes(b'content_l1')
+            repository_l1 = repository_path / 'l1'
+            repository_l1.mkdir()
+            (repository_l1 / 'file_l1.txt').write_bytes(b'content_l1')
 
-            archive_l2 = archive_l1 / 'l2'
-            archive_l2.mkdir()
-            (archive_l2 / 'file_l2.txt').write_bytes(b'content_l2')
+            repository_l2 = repository_l1 / 'l2'
+            repository_l2.mkdir()
+            (repository_l2 / 'file_l2.txt').write_bytes(b'content_l2')
 
-            archive_l3 = archive_l2 / 'l3'
-            archive_l3.mkdir()
-            # Deep file with archive-specific content
-            (archive_l3 / 'deep_file.txt').write_bytes(b'archive_content')
+            repository_l3 = repository_l2 / 'l3'
+            repository_l3.mkdir()
+            # Deep file with repository-specific content
+            (repository_l3 / 'deep_file.txt').write_bytes(b'repository_content')
 
             # Create matching structure in target
             target_path = Path(tmpdir) / 'target'
@@ -984,27 +984,27 @@ class DirectoryAnalysisTest(unittest.TestCase):
             target_l1.mkdir()
             target_file_l1 = target_l1 / 'file_l1.txt'
             target_file_l1.write_bytes(b'content_l1')
-            copy_times(archive_l1 / 'file_l1.txt', target_file_l1)
+            copy_times(repository_l1 / 'file_l1.txt', target_file_l1)
 
             target_l2 = target_l1 / 'l2'
             target_l2.mkdir()
             target_file_l2 = target_l2 / 'file_l2.txt'
             target_file_l2.write_bytes(b'content_l2')
-            copy_times(archive_l2 / 'file_l2.txt', target_file_l2)
+            copy_times(repository_l2 / 'file_l2.txt', target_file_l2)
 
             target_l3 = target_l2 / 'l3'
             target_l3.mkdir()
             # Different content at deepest level
             target_deep = target_l3 / 'deep_file.txt'
             target_deep.write_bytes(b'analyzed_content')
-            copy_times(archive_l3 / 'deep_file.txt', target_deep)
+            copy_times(repository_l3 / 'deep_file.txt', target_deep)
 
             report_dir = target_path / 'analyzed_l1.report'
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_path / 'analyzed_l1'])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_path / 'analyzed_l1'])
 
             # Verify root directory (l1) is not identical
             db = plyvel.DB(str(report_dir / 'database'))
@@ -1038,22 +1038,22 @@ class DirectoryAnalysisTest(unittest.TestCase):
         when child files existed in both directories but had different content (no duplicate match).
 
         Scenario:
-        - Directory has same child names in both analyzed and archive
-        - One child file has different content (no duplicate in archive)
+        - Directory has same child names in both analyzed and repository
+        - One child file has different content (no duplicate in repository)
         - The directory should be marked as NOT identical and NOT superset
 
         Bug: The old code only checked structural mismatch (all_items != candidate_items) but missed
         the case where items had the same names but different content (items_with_no_duplicates).
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
 
-            # Create archive directory
-            archive_dir = archive_path / 'mydir'
-            archive_dir.mkdir()
-            (archive_dir / 'identical.txt').write_bytes(b'same content')
-            (archive_dir / 'different.txt').write_bytes(b'archive version')
+            # Create repository directory
+            repository_dir = repository_path / 'mydir'
+            repository_dir.mkdir()
+            (repository_dir / 'identical.txt').write_bytes(b'same content')
+            (repository_dir / 'different.txt').write_bytes(b'repository version')
 
             # Create target directory with same structure
             target_path = Path(tmpdir) / 'target'
@@ -1064,19 +1064,19 @@ class DirectoryAnalysisTest(unittest.TestCase):
             # Identical file with copied times
             identical_file = target_dir / 'identical.txt'
             identical_file.write_bytes(b'same content')
-            copy_times(archive_dir / 'identical.txt', identical_file)
+            copy_times(repository_dir / 'identical.txt', identical_file)
 
             # Different content file (same name, different content)
             different_file = target_dir / 'different.txt'
             different_file.write_bytes(b'analyzed version')
-            copy_times(archive_dir / 'different.txt', different_file)
+            copy_times(repository_dir / 'different.txt', different_file)
 
             report_dir = target_path / 'analyzed_dir.report'
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([target_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([target_dir])
 
             # Verify directory is NOT marked as identical or superset
             db = plyvel.DB(str(report_dir / 'database'))
@@ -1109,7 +1109,7 @@ class DirectoryAnalysisTest(unittest.TestCase):
         """Test that a directory is NOT a superset when an analyzed file has no duplicate in that candidate.
 
         This regression test covers the case where:
-        - Multiple candidate directories exist in the archive
+        - Multiple candidate directories exist in the repository
         - An analyzed file has duplicates in some candidates but NOT in others
         - Each candidate should be independently evaluated
 
@@ -1117,18 +1117,18 @@ class DirectoryAnalysisTest(unittest.TestCase):
         checking per-candidate whether all analyzed items have matches.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
 
-            # Create first archive candidate with only fileA
-            archive_candidate1 = archive_path / 'candidate1'
-            archive_candidate1.mkdir()
-            (archive_candidate1 / 'fileA.txt').write_bytes(b'content A')
+            # Create first repository candidate with only fileA
+            repository_candidate1 = repository_path / 'candidate1'
+            repository_candidate1.mkdir()
+            (repository_candidate1 / 'fileA.txt').write_bytes(b'content A')
 
-            # Create second archive candidate with only fileB
-            archive_candidate2 = archive_path / 'candidate2'
-            archive_candidate2.mkdir()
-            (archive_candidate2 / 'fileB.txt').write_bytes(b'content B')
+            # Create second repository candidate with only fileB
+            repository_candidate2 = repository_path / 'candidate2'
+            repository_candidate2.mkdir()
+            (repository_candidate2 / 'fileB.txt').write_bytes(b'content B')
 
             # Create analyzed directory with both files
             target_path = Path(tmpdir) / 'target'
@@ -1138,18 +1138,18 @@ class DirectoryAnalysisTest(unittest.TestCase):
 
             fileA = analyzed_dir / 'fileA.txt'
             fileA.write_bytes(b'content A')
-            copy_times(archive_candidate1 / 'fileA.txt', fileA)
+            copy_times(repository_candidate1 / 'fileA.txt', fileA)
 
             fileB = analyzed_dir / 'fileB.txt'
             fileB.write_bytes(b'content B')
-            copy_times(archive_candidate2 / 'fileB.txt', fileB)
+            copy_times(repository_candidate2 / 'fileB.txt', fileB)
 
             report_dir = target_path / 'analyzed.report'
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([analyzed_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([analyzed_dir])
 
             # Verify both candidates are NOT identical and NOT superset
             db = plyvel.DB(str(report_dir / 'database'))
@@ -1194,15 +1194,15 @@ class DirectoryAnalysisTest(unittest.TestCase):
         - Directory should be marked as identical
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
 
-            # Create archive directory with multiple files
-            archive_dir = archive_path / 'complete'
-            archive_dir.mkdir()
-            (archive_dir / 'file1.txt').write_bytes(b'content 1')
-            (archive_dir / 'file2.txt').write_bytes(b'content 2')
-            (archive_dir / 'file3.txt').write_bytes(b'content 3')
+            # Create repository directory with multiple files
+            repository_dir = repository_path / 'complete'
+            repository_dir.mkdir()
+            (repository_dir / 'file1.txt').write_bytes(b'content 1')
+            (repository_dir / 'file2.txt').write_bytes(b'content 2')
+            (repository_dir / 'file3.txt').write_bytes(b'content 3')
 
             # Create analyzed directory with all matching files
             target_path = Path(tmpdir) / 'target'
@@ -1212,18 +1212,18 @@ class DirectoryAnalysisTest(unittest.TestCase):
 
             for filename in ['file1.txt', 'file2.txt', 'file3.txt']:
                 target_file = analyzed_dir / filename
-                target_file.write_bytes((archive_dir / filename).read_bytes())
-                copy_times(archive_dir / filename, target_file)
+                target_file.write_bytes((repository_dir / filename).read_bytes())
+                copy_times(repository_dir / filename, target_file)
 
             # Copy directory metadata
-            copy_times(archive_dir, analyzed_dir)
+            copy_times(repository_dir, analyzed_dir)
 
             report_dir = target_path / 'analyzed_complete.report'
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
-                    archive.rebuild()
-                    archive.analyze([analyzed_dir])
+                with Repository(processor, str(repository_path), create=True) as repository:
+                    repository.rebuild()
+                    repository.analyze([analyzed_dir])
 
             # Verify directory IS marked as identical
             db = plyvel.DB(str(report_dir / 'database'))

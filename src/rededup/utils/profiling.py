@@ -1,6 +1,6 @@
-"""Profiling support for arindexer using cProfile.
+"""Profiling support for rededup using cProfile.
 
-When the ARINDEXER_PROFILE environment variable is set to a directory path,
+When the REDEDUP_PROFILE environment variable is set to a directory path,
 profiling data will be collected and saved to that directory with unique
 filenames containing timestamp, controlling process PID, and actual PID.
 """
@@ -23,11 +23,11 @@ def get_profile_dir() -> Path | None:
     """Get the profile directory from environment variable.
 
     Returns:
-        Path to profile directory if ARINDEXER_PROFILE is set, None otherwise.
+        Path to profile directory if REDEDUP_PROFILE is set, None otherwise.
         The path will include a subdirectory for the main process with format:
         {timestamp}_{pid} (e.g., "1730332456789_54321")
     """
-    profile_path = os.environ.get('ARINDEXER_PROFILE')
+    profile_path = os.environ.get('REDEDUP_PROFILE')
     if profile_path:
         # Get the session directory name (timestamp_pid)
         session_dir = _get_session_dir_name()
@@ -46,7 +46,7 @@ def _get_session_dir_name() -> str:
         Directory name string like "1730332456789_54321"
     """
     # Use environment variable to track the session directory across processes
-    session_dir = os.environ.get('_ARINDEXER_PROFILE_SESSION_DIR')
+    session_dir = os.environ.get('_REDEDUP_PROFILE_SESSION_DIR')
     if session_dir:
         return session_dir
     # If not set, we are the main process - create new session directory name
@@ -79,7 +79,7 @@ def generate_profile_filename(prefix: str = "profile") -> str:
 
 
 def profile_function(func: Callable[P, T], prefix: str = "profile") -> Callable[P, T]:
-    """Decorator/wrapper to profile a function if ARINDEXER_PROFILE is set.
+    """Decorator/wrapper to profile a function if REDEDUP_PROFILE is set.
 
     Args:
         func: Function to profile
@@ -131,10 +131,10 @@ def profile_main(func: Callable[P, T]) -> Callable[P, T]:
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
         # Set the session directory environment variable so workers know where to store profiles
-        if os.environ.get('ARINDEXER_PROFILE'):
+        if os.environ.get('REDEDUP_PROFILE'):
             # Generate the session directory name (timestamp_pid) once for the whole session
             session_dir = _get_session_dir_name()
-            os.environ['_ARINDEXER_PROFILE_SESSION_DIR'] = session_dir
+            os.environ['_REDEDUP_PROFILE_SESSION_DIR'] = session_dir
 
         # Use the standard profile_function wrapper
         profiled_func = profile_function(func, prefix="main")

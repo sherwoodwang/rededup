@@ -10,14 +10,14 @@ import plyvel
 from ..utils.keyed_lock import KeyedLock
 from ..utils.varint import encode_varint, decode_varint
 from ..utils.walker import FileContext, WalkPolicy, walk_with_policy, resolve_symlink_target
-from .archive_settings import ArchiveSettings, SETTING_FOLLOWED_SYMLINKS
+from .settings import IndexSettings, SETTING_FOLLOWED_SYMLINKS
 
 
 class FileSignature:
     """File metadata signature for content tracking.
 
     Attributes:
-        path: File path relative to archive root
+        path: File path relative to repository root
         digest: Content digest (hash) of the file
         mtime_ns: File modification time in nanoseconds since epoch
         ec_id: Equivalence Class ID - identifies which EC class this file belongs to
@@ -38,14 +38,14 @@ class FileSignature:
         self.ec_id = ec_id
 
 
-class ArchiveIndexNotFound(FileNotFoundError):
+class IndexNotFound(FileNotFoundError):
     pass
 
 
-class ArchiveStore:
-    """Low-level data operations layer for archive file indexing.
+class IndexStore:
+    """Low-level data operations layer for repository file indexing.
 
-    This class represents the archive from a data operations perspective, providing
+    This class represents the repository from a data operations perspective, providing
     direct access to the persistent storage layer (LevelDB). It handles:
     - Database lifecycle (open, close, context management)
     - Manifest storage and retrieval
@@ -53,13 +53,13 @@ class ArchiveStore:
     - Content equivalent class management
     - File system traversal
 
-    ArchiveStore operates at the storage level, exposing primitive operations for
-    reading and writing archive metadata. It makes no assumptions about workflows
+    IndexStore operates at the storage level, exposing primitive operations for
+    reading and writing repository metadata. It makes no assumptions about workflows
     or business logic - it simply provides the foundational data operations that
     higher-level components can compose into more complex behaviors.
 
-    Contrast with Archive class, which provides high-level operations like rebuild()
-    and refresh() that orchestrate multiple ArchiveStore operations into complete
+    Contrast with Repository class, which provides high-level operations like rebuild()
+    and refresh() that orchestrate multiple IndexStore operations into complete
     workflows with proper error handling and concurrency management.
 
     Content Equivalent Classes (EC Classes):
@@ -81,7 +81,7 @@ class ArchiveStore:
        - Files C, D with digest "abc123" and content Y → (digest="abc123", ec_id=1)
 
     4. **EC ID Assignment**: EC IDs start at 0 for each digest and increment as
-       needed. When importing or merging archives, EC IDs may need remapping to
+       needed. When importing or merging repositories, EC IDs may need remapping to
        avoid collisions while preserving content equivalence relationships.
 
     5. **Content Verification**: Operations that merge EC classes (like import)
@@ -94,52 +94,52 @@ class ArchiveStore:
 
     MANIFEST_HASH_ALGORITHM = 'hash-algorithm'
     MANIFEST_PENDING_ACTION = 'truncating'
-    MANIFEST_ARCHIVE_ID = 'archive-id'
+    MANIFEST_REPOSITORY_ID = 'repository-id'
 
-    def __init__(self, settings: ArchiveSettings, archive_path: Path, create: bool = False):
-        """Initialize raw archive with LevelDB database.
+    def __init__(self, settings: 'IndexSettings', repository_path: Path, create: bool = False):
+        """Initialize raw repository with LevelDB index storage.
 
         Args:
-            settings: Archive settings for configuration
-            archive_path: Archive root directory path
-            create: Create .aridx directory if missing
+            settings: Repository settings for configuration
+            repository_path: Repository root directory path
+            create: Create .rededup directory if missing
 
         Raises:
-            FileNotFoundError: Archive directory does not exist
-            NotADirectoryError: Archive path is not a directory
-            ArchiveIndexNotFound: Index directory missing and create=False
+            FileNotFoundError: Repository directory does not exist
+            NotADirectoryError: Repository path is not a directory
+            IndexNotFound: Index directory missing and create=False
         """
-        if not archive_path.exists():
-            raise FileNotFoundError(f"Archive {archive_path} does not exist")
+        if not repository_path.exists():
+            raise FileNotFoundError(f"Repository {repository_path} does not exist")
 
-        if not archive_path.is_dir():
-            raise NotADirectoryError(f"Archive {archive_path} is not a directory")
+        if not repository_path.is_dir():
+            raise NotADirectoryError(f"Repository {repository_path} is not a directory")
 
-        index_path = archive_path / '.aridx'
+        index_path = repository_path / '.rededup'
 
         if create:
             index_path.mkdir(exist_ok=True)
 
         if not index_path.exists():
-            raise ArchiveIndexNotFound(f"The index for archive {archive_path} has not been created")
+            raise IndexNotFound(f"The index for repository {repository_path} has not been created")
 
         if not index_path.is_dir():
-            raise NotADirectoryError(f"The index for archive {archive_path} is not a directory")
+            raise NotADirectoryError(f"The index for repository {repository_path} is not a directory")
 
-        database_path = index_path / 'database'
+        index_db_path = index_path / 'index'
 
         database = None
         try:
-            database = plyvel.DB(str(database_path), create_if_missing=True)
-            manifest_database: plyvel.DB = database.prefixed_db(ArchiveStore.__MANIFEST_PROPERTY_PREFIX)
-            file_hash_database: plyvel.DB = database.prefixed_db(ArchiveStore.__FILE_HASH_PREFIX)
-            file_signature_database: plyvel.DB = database.prefixed_db(ArchiveStore.__FILE_SIGNATURE_PREFIX)
+            database = plyvel.DB(str(index_db_path), create_if_missing=True)
+            manifest_database: plyvel.DB = database.prefixed_db(IndexStore.__MANIFEST_PROPERTY_PREFIX)
+            file_hash_database: plyvel.DB = database.prefixed_db(IndexStore.__FILE_HASH_PREFIX)
+            file_signature_database: plyvel.DB = database.prefixed_db(IndexStore.__FILE_SIGNATURE_PREFIX)
         except:
             if database is not None:
                 database.close()
             raise
 
-        self._archive_path = archive_path
+        self._repository_path = repository_path
         self._alive = True
         self._database = database
         self._manifest_database = manifest_database
@@ -150,16 +150,16 @@ class ArchiveStore:
         # Concurrency control for database operations
         self._ec_prefix_lock = KeyedLock()  # For EC class operations
         self._path_hash_lock = KeyedLock()  # For file signature operations
-        self._manifest_lock = Lock()  # For manifest operations (e.g., ensure_archive_id)
+        self._manifest_lock = Lock()  # For manifest operations (e.g., ensure_repository_id)
 
     def __del__(self):
         """Destructor ensures database is closed."""
         self.close()
 
     def __enter__(self):
-        """Context manager entry, validates raw archive is still alive."""
+        """Context manager entry, validates raw repository is still alive."""
         if not self._alive:
-            raise BrokenPipeError(f"Raw archive was closed")
+            raise BrokenPipeError(f"Raw repository was closed")
 
         return self
 
@@ -168,7 +168,7 @@ class ArchiveStore:
         self.close()
 
     def close(self):
-        """Close LevelDB database and mark raw archive as closed."""
+        """Close LevelDB database and mark raw repository as closed."""
         if not getattr(self, '_alive', False):
             return
 
@@ -179,17 +179,17 @@ class ArchiveStore:
             self._database = None
 
     @property
-    def archive_path(self) -> Path:
-        """Get the archive root directory path."""
-        return self._archive_path
+    def repository_path(self) -> Path:
+        """Get the repository root directory path."""
+        return self._repository_path
 
     def truncate(self):
         """Clear all file hash and signature entries, reset manifest."""
         assert self._file_signature_database is not None
         assert self._file_hash_database is not None
 
-        self.write_manifest(ArchiveStore.MANIFEST_PENDING_ACTION, 'truncate')
-        self.write_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM, None)
+        self.write_manifest(IndexStore.MANIFEST_PENDING_ACTION, 'truncate')
+        self.write_manifest(IndexStore.MANIFEST_HASH_ALGORITHM, None)
 
         batch = self._file_signature_database.write_batch()
         for key, _ in self._file_signature_database.iterator():
@@ -201,7 +201,7 @@ class ArchiveStore:
             batch.delete(key)
         batch.write()
 
-        self.write_manifest(ArchiveStore.MANIFEST_PENDING_ACTION, None)
+        self.write_manifest(IndexStore.MANIFEST_PENDING_ACTION, None)
 
     def write_manifest(self, entry: str, value: str | None) -> None:
         """Write or delete manifest property. None value deletes the key."""
@@ -219,21 +219,21 @@ class ArchiveStore:
 
         return value
 
-    def ensure_archive_id(self) -> str:
-        """Ensure archive ID exists in manifest, generating if needed.
+    def ensure_repository_id(self) -> str:
+        """Ensure repository ID exists in manifest, generating if needed.
 
         Thread-safe: Uses a lock to prevent race conditions where multiple threads
-        might simultaneously check for the archive ID and generate different IDs.
+        might simultaneously check for the repository ID and generate different IDs.
 
         This is an atomic operation that checks for existence and generates
         a new ID only if one doesn't already exist.
 
         Returns:
-            The archive ID (existing or newly generated)
+            The repository ID (existing or newly generated)
         """
         import uuid
 
-        key = ArchiveStore.MANIFEST_ARCHIVE_ID.encode()
+        key = IndexStore.MANIFEST_REPOSITORY_ID.encode()
 
         # Acquire lock to ensure atomicity of check-and-set operation
         with self._manifest_lock:
@@ -243,17 +243,17 @@ class ArchiveStore:
                 return existing.decode()
 
             # Generate new ID and store it
-            archive_id = str(uuid.uuid4())
-            self._manifest_database.put(key, archive_id.encode())
-            return archive_id
+            repository_id = str(uuid.uuid4())
+            self._manifest_database.put(key, repository_id.encode())
+            return repository_id
 
-    def get_archive_id(self) -> str | None:
-        """Get the current archive identifier from the manifest.
+    def get_repository_id(self) -> str | None:
+        """Get the current repository identifier from the manifest.
 
         Returns:
-            The archive ID, or None if not set
+            The repository ID, or None if not set
         """
-        return self.read_manifest(ArchiveStore.MANIFEST_ARCHIVE_ID)
+        return self.read_manifest(IndexStore.MANIFEST_REPOSITORY_ID)
 
     def register_file(self, path, signature: FileSignature) -> None:
         """Store file signature in 's:' prefixed database entry.
@@ -266,7 +266,7 @@ class ArchiveStore:
         but threads working on the same path hash will serialize their operations.
 
         Args:
-            path: Relative path from archive root
+            path: Relative path from repository root
             signature: File metadata including path, digest, mtime_ns, and ec_id
 
         Notes:
@@ -320,7 +320,7 @@ class ArchiveStore:
         but threads working on the same path hash will serialize their operations.
 
         Args:
-            path: Relative path from archive root
+            path: Relative path from repository root
 
         Notes:
             - Uses 128-bit Murmur3 hash of the path as a prefix
@@ -348,7 +348,7 @@ class ArchiveStore:
         """Retrieve stored file signature by path.
 
         Args:
-            path: Relative path from archive root
+            path: Relative path from repository root
 
         Returns:
             FileSignature if found, None otherwise
@@ -526,7 +526,7 @@ class ArchiveStore:
         Args:
             digest: Content digest of the files (hash value)
             ec_id: Equivalence class ID to add the paths to
-            paths_to_add: List of file paths to add, relative to archive root
+            paths_to_add: List of file paths to add, relative to repository root
 
         Notes:
             - Each path is stored with key: <digest><ec_id><path_hash><varint seq_num>
@@ -592,7 +592,7 @@ class ArchiveStore:
         Args:
             digest: Content digest of the file (hash value)
             ec_id: Equivalence class ID to remove the paths from
-            paths_to_remove: List of file paths to remove, relative to archive root
+            paths_to_remove: List of file paths to remove, relative to repository root
 
         Notes:
             - Searches for path by iterating through sequence numbers for each hash
@@ -652,7 +652,7 @@ class ArchiveStore:
             Formatted strings showing manifest-property, file-hash, and file-metadata entries
             with hex digests, timestamps, and URL-encoded paths
         """
-        hash_algorithm = self.read_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM)
+        hash_algorithm = self.read_manifest(IndexStore.MANIFEST_HASH_ALGORITHM)
         if hash_algorithm in hash_algorithms:
             hash_length, _ = hash_algorithms[hash_algorithm]
         else:
@@ -661,11 +661,11 @@ class ArchiveStore:
         assert self._database is not None
         for key, value in self._database.iterator():
             key: bytes
-            if key.startswith(ArchiveStore.__MANIFEST_PROPERTY_PREFIX):
-                entry = key[len(ArchiveStore.__MANIFEST_PROPERTY_PREFIX):].decode()
+            if key.startswith(IndexStore.__MANIFEST_PROPERTY_PREFIX):
+                entry = key[len(IndexStore.__MANIFEST_PROPERTY_PREFIX):].decode()
                 yield f'manifest-property {entry} {value.decode()}'
-            elif key.startswith(ArchiveStore.__FILE_HASH_PREFIX):
-                digest_and_rest = key[len(ArchiveStore.__FILE_HASH_PREFIX):]
+            elif key.startswith(IndexStore.__FILE_HASH_PREFIX):
+                digest_and_rest = key[len(IndexStore.__FILE_HASH_PREFIX):]
                 if hash_length is not None and len(digest_and_rest) >= hash_length + 4 + 4:
                     digest = digest_and_rest[:hash_length]
                     # Parse ec_id, path_hash, seq_num
@@ -682,10 +682,10 @@ class ArchiveStore:
                 else:
                     hex_digest_and_rest = digest_and_rest.hex()
                     yield f'file-hash *{hex_digest_and_rest} {value}'
-            elif key.startswith(ArchiveStore.__FILE_SIGNATURE_PREFIX):
+            elif key.startswith(IndexStore.__FILE_SIGNATURE_PREFIX):
                 from datetime import datetime, timezone
                 # Key format: <16-byte path hash><varint sequence number>
-                sig_key = key[len(ArchiveStore.__FILE_SIGNATURE_PREFIX):]
+                sig_key = key[len(IndexStore.__FILE_SIGNATURE_PREFIX):]
                 # Extract path hash (first 16 bytes)
                 path_hash_hex = sig_key[:16].hex()
                 # Decode sequence number from remaining bytes
@@ -708,8 +708,8 @@ class ArchiveStore:
             else:
                 yield f'OTHER {key} {value}'
 
-    def walk_archive(self) -> Iterator[tuple[Path, FileContext]]:
-        """Traverse archive directory excluding .aridx, yielding (path, context) pairs.
+    def walk_repository(self) -> Iterator[tuple[Path, FileContext]]:
+        """Traverse repository directory excluding .rededup, yielding (path, context) pairs.
 
         Symlinks configured in the 'followed_symlinks' setting will be followed during traversal.
         When a symlink is followed, a substitute FileContext is created with stat information from
@@ -724,16 +724,16 @@ class ArchiveStore:
         def should_follow_symlink_wrapper(file_path: Path, file_context: FileContext) -> FileContext | None:
             """Wrapper to check symlink following policy."""
             if str(file_context.relative_path) in symlinks_to_follow:
-                resolved_path = resolve_symlink_target(file_path, {self._archive_path, self._archive_path.resolve()})
+                resolved_path = resolve_symlink_target(file_path, {self._repository_path, self._repository_path.resolve()})
                 if resolved_path is not None:
                     return FileContext(file_context.parent, file_path.name, resolved_path, resolved_path.stat())
             return None
 
         policy = WalkPolicy(
-            excluded_paths={Path('.aridx')},
+            excluded_paths={Path('.rededup')},
             should_follow_symlink=should_follow_symlink_wrapper
         )
-        yield from walk_with_policy(self._archive_path, policy)
+        yield from walk_with_policy(self._repository_path, policy)
 
     @staticmethod
     def walk(path: Path) -> Iterator[tuple[Path, FileContext]]:

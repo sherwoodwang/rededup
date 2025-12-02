@@ -9,9 +9,9 @@ class FileContext:
     """Context object for a file or directory during traversal.
 
     IMPORTANT: The _path attribute is protected and should not be accessed directly
-    outside of this class. To get the full path of a file, concatenate the archive/root
+    outside of this class. To get the full path of a file, concatenate the repository/root
     path with the relative_path property instead:
-        full_path = archive_path / context.relative_path
+        full_path = repository_path / context.relative_path
 
     The _path attribute is used internally for stat() operations when stat info
     is not pre-computed.
@@ -137,11 +137,11 @@ def walk_with_policy(path: Path, policy: WalkPolicy) -> Iterator[tuple[Path, Fil
 
     Example:
         policy = WalkPolicy(
-            excluded_paths={Path('.aridx')},
+            excluded_paths={Path('.rededup')},
             should_follow_symlink=my_symlink_handler,
             yield_root=True
         )
-        for file_path, context in walk_with_policy(archive_path, policy):
+        for file_path, context in walk_with_policy(repository_path, policy):
             process_file(file_path, context)
     """
     if policy.yield_root:
@@ -193,7 +193,7 @@ def resolve_symlink_target(
 
     Args:
         file_path: Path to the symlink (will be converted to absolute)
-        boundary_paths: Set of boundary paths to check against (e.g., {archive_root})
+        boundary_paths: Set of boundary paths to check against (e.g., {repository_root})
 
     Returns:
         Path to the final symlink target if it should be followed (outside all boundaries),

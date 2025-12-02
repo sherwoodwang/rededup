@@ -4,44 +4,44 @@ import unittest
 import urllib.parse
 from pathlib import Path
 
-from arindexer import Archive
-from arindexer.utils.processor import Processor
+from rededup import Repository
+from rededup.utils.processor import Processor
 
 from ..test_utils import compute_xor
 
 
 class ImportTest(unittest.TestCase):
-    """Test import functionality for importing index entries from other archives."""
+    """Test import functionality for importing index entries from other repositories."""
 
-    def test_import_from_nested_archive(self):
-        """Test importing from a nested subdirectory archive."""
+    def test_import_from_nested_repository(self):
+        """Test importing from a nested subdirectory repository."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create parent archive
-            parent_path = Path(tmpdir) / 'parent_archive'
+            # Create parent repository
+            parent_path = Path(tmpdir) / 'parent_repository'
             parent_path.mkdir()
 
-            # Create nested archive
-            nested_path = parent_path / 'subdir' / 'nested_archive'
+            # Create nested repository
+            nested_path = parent_path / 'subdir' / 'nested_repository'
             nested_path.mkdir(parents=True)
 
-            # Add files to nested archive
+            # Add files to nested repository
             (nested_path / 'file1.txt').write_text('content1')
             (nested_path / 'file2.txt').write_text('content2')
             (nested_path / 'dir1').mkdir()
             (nested_path / 'dir1' / 'file3.txt').write_text('content3')
 
             with Processor() as processor:
-                # Build nested archive index
-                with Archive(processor, str(nested_path), create=True) as nested_archive:
-                    nested_archive.rebuild()
+                # Build nested repository index
+                with Repository(processor, str(nested_path), create=True) as nested_repository:
+                    nested_repository.rebuild()
 
-                # Import into parent archive
-                with Archive(processor, str(parent_path), create=True) as parent_archive:
-                    parent_archive.import_index(str(nested_path))
+                # Import into parent repository
+                with Repository(processor, str(parent_path), create=True) as parent_repository:
+                    parent_repository.import_index(str(nested_path))
 
                     # Check that files are imported with correct prefix
                     indexed_files = []
-                    for line in parent_archive.inspect():
+                    for line in parent_repository.inspect():
                         if line.startswith('file-metadata'):
                             parts = line.split()
                             # URL decode the path
@@ -49,19 +49,19 @@ class ImportTest(unittest.TestCase):
                             path = urllib.parse.unquote_plus(parts[3])
                             indexed_files.append(path)
 
-                    self.assertIn('subdir/nested_archive/file1.txt', indexed_files)
-                    self.assertIn('subdir/nested_archive/file2.txt', indexed_files)
-                    self.assertIn('subdir/nested_archive/dir1/file3.txt', indexed_files)
+                    self.assertIn('subdir/nested_repository/file1.txt', indexed_files)
+                    self.assertIn('subdir/nested_repository/file2.txt', indexed_files)
+                    self.assertIn('subdir/nested_repository/dir1/file3.txt', indexed_files)
 
-    def test_import_from_ancestor_archive(self):
-        """Test importing from an ancestor archive."""
+    def test_import_from_ancestor_repository(self):
+        """Test importing from an ancestor repository."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create parent archive
-            parent_path = Path(tmpdir) / 'parent_archive'
+            # Create parent repository
+            parent_path = Path(tmpdir) / 'parent_repository'
             parent_path.mkdir()
 
             # Create nested directory
-            nested_path = parent_path / 'subdir' / 'nested_archive'
+            nested_path = parent_path / 'subdir' / 'nested_repository'
             nested_path.mkdir(parents=True)
 
             # Add files to both parent and nested locations
@@ -71,17 +71,17 @@ class ImportTest(unittest.TestCase):
             (parent_path / 'other_dir' / 'other_file.txt').write_text('other content')
 
             with Processor() as processor:
-                # Build parent archive index
-                with Archive(processor, str(parent_path), create=True) as parent_archive:
-                    parent_archive.rebuild()
+                # Build parent repository index
+                with Repository(processor, str(parent_path), create=True) as parent_repository:
+                    parent_repository.rebuild()
 
-                # Import into nested archive (should only get files under nested path)
-                with Archive(processor, str(nested_path), create=True) as nested_archive:
-                    nested_archive.import_index(str(parent_path))
+                # Import into nested repository (should only get files under nested path)
+                with Repository(processor, str(nested_path), create=True) as nested_repository:
+                    nested_repository.import_index(str(parent_path))
 
                     # Check that only nested files are imported with prefix removed
                     indexed_files = []
-                    for line in nested_archive.inspect():
+                    for line in nested_repository.inspect():
                         if line.startswith('file-metadata'):
                             parts = line.split()
                             # URL decode the path
@@ -95,60 +95,60 @@ class ImportTest(unittest.TestCase):
                     self.assertNotIn('root_file.txt', indexed_files)
                     self.assertNotIn('other_dir/other_file.txt', indexed_files)
 
-    def test_import_rejects_same_archive(self):
-        """Test that importing from the same archive is rejected."""
+    def test_import_rejects_same_repository(self):
+        """Test that importing from the same repository is rejected."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
+                with Repository(processor, str(repository_path), create=True) as repository:
                     with self.assertRaises(ValueError) as context:
-                        archive.import_index(str(archive_path))
+                        repository.import_index(str(repository_path))
                     self.assertIn('cannot be the same', str(context.exception))
 
     def test_import_rejects_aridx_directory(self):
-        """Test that importing from .aridx directory is rejected."""
+        """Test that importing from .rededup directory is rejected."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive_path = Path(tmpdir) / 'archive'
-            archive_path.mkdir()
-            aridx_path = archive_path / '.aridx'
+            repository_path = Path(tmpdir) / 'repository'
+            repository_path.mkdir()
+            aridx_path = repository_path / '.rededup'
             aridx_path.mkdir()
 
             with Processor() as processor:
-                with Archive(processor, str(archive_path), create=True) as archive:
+                with Repository(processor, str(repository_path), create=True) as repository:
                     with self.assertRaises(ValueError) as context:
-                        archive.import_index(str(aridx_path))
-                    self.assertIn('.aridx', str(context.exception))
+                        repository.import_index(str(aridx_path))
+                    self.assertIn('.rededup', str(context.exception))
 
     def test_import_rejects_invalid_relationship(self):
-        """Test that importing from unrelated archive is rejected."""
+        """Test that importing from unrelated repository is rejected."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            archive1_path = Path(tmpdir) / 'archive1'
-            archive1_path.mkdir()
-            archive2_path = Path(tmpdir) / 'archive2'
-            archive2_path.mkdir()
+            repository1_path = Path(tmpdir) / 'repository1'
+            repository1_path.mkdir()
+            repository2_path = Path(tmpdir) / 'repository2'
+            repository2_path.mkdir()
 
             with Processor() as processor:
-                with Archive(processor, str(archive1_path), create=True) as archive1:
-                    with Archive(processor, str(archive2_path), create=True) as archive2:
+                with Repository(processor, str(repository1_path), create=True) as repository1:
+                    with Repository(processor, str(repository2_path), create=True) as repository2:
                         with self.assertRaises(ValueError) as context:
-                            archive1.import_index(str(archive2_path))
+                            repository1.import_index(str(repository2_path))
                         self.assertIn('nested', str(context.exception))
                         self.assertIn('ancestor', str(context.exception))
 
     def test_import_with_ec_id_collision(self):
         """Test that EC ID collisions are handled by remapping."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create parent archive
-            parent_path = Path(tmpdir) / 'parent_archive'
+            # Create parent repository
+            parent_path = Path(tmpdir) / 'parent_repository'
             parent_path.mkdir()
 
-            # Create nested archive
+            # Create nested repository
             nested_path = parent_path / 'nested'
             nested_path.mkdir()
 
-            # Create files with identical content that will have EC ID 0 in both archives
+            # Create files with identical content that will have EC ID 0 in both repositories
             content = 'identical content'
             (parent_path / 'parent_file1.txt').write_text(content)
             (parent_path / 'parent_file2.txt').write_text(content)
@@ -156,21 +156,21 @@ class ImportTest(unittest.TestCase):
             (nested_path / 'nested_file2.txt').write_text(content)
 
             with Processor() as processor:
-                # Build parent archive - files will get EC ID 0
-                with Archive(processor, str(parent_path), create=True) as parent_archive:
-                    parent_archive.rebuild()
+                # Build parent repository - files will get EC ID 0
+                with Repository(processor, str(parent_path), create=True) as parent_repository:
+                    parent_repository.rebuild()
 
-                # Build nested archive - files will also get EC ID 0
-                with Archive(processor, str(nested_path), create=True) as nested_archive:
-                    nested_archive.rebuild()
+                # Build nested repository - files will also get EC ID 0
+                with Repository(processor, str(nested_path), create=True) as nested_repository:
+                    nested_repository.rebuild()
 
                 # Now import nested into parent - should remap EC IDs to avoid collision
-                with Archive(processor, str(parent_path), create=False) as parent_archive:
-                    parent_archive.import_index(str(nested_path))
+                with Repository(processor, str(parent_path), create=False) as parent_repository:
+                    parent_repository.import_index(str(nested_path))
 
                     # Check that all files are present
                     indexed_files = {}
-                    for line in parent_archive.inspect():
+                    for line in parent_repository.inspect():
                         if line.startswith('file-metadata'):
                             parts = line.split()
                             # Extract path from line: file-metadata path_hash:{hash} seq:{seq} {path} ...
@@ -197,37 +197,37 @@ class ImportTest(unittest.TestCase):
     def test_import_with_ec_id_collision_different_content(self):
         """Test that files with different content maintain separate EC classes."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create parent archive
-            parent_path = Path(tmpdir) / 'parent_archive'
+            # Create parent repository
+            parent_path = Path(tmpdir) / 'parent_repository'
             parent_path.mkdir()
 
-            # Create nested archive
+            # Create nested repository
             nested_path = parent_path / 'nested'
             nested_path.mkdir()
 
-            # Create files with same content in each archive (so they get EC ID 0)
-            # But different content between archives
+            # Create files with same content in each repository (so they get EC ID 0)
+            # But different content between repositories
             (parent_path / 'parent_file1.txt').write_text('parent content A')
             (parent_path / 'parent_file2.txt').write_text('parent content A')
             (nested_path / 'nested_file1.txt').write_text('nested content B')
             (nested_path / 'nested_file2.txt').write_text('nested content B')
 
             with Processor() as processor:
-                # Build parent archive
-                with Archive(processor, str(parent_path), create=True) as parent_archive:
-                    parent_archive.rebuild()
+                # Build parent repository
+                with Repository(processor, str(parent_path), create=True) as parent_repository:
+                    parent_repository.rebuild()
 
-                # Build nested archive
-                with Archive(processor, str(nested_path), create=True) as nested_archive:
-                    nested_archive.rebuild()
+                # Build nested repository
+                with Repository(processor, str(nested_path), create=True) as nested_repository:
+                    nested_repository.rebuild()
 
                 # Import nested into parent
-                with Archive(processor, str(parent_path), create=False) as parent_archive:
-                    parent_archive.import_index(str(nested_path))
+                with Repository(processor, str(parent_path), create=False) as parent_repository:
+                    parent_repository.import_index(str(nested_path))
 
                     # Check that all files are present with correct EC assignments
                     indexed_files = {}  # path -> (digest, ec_id)
-                    for line in parent_archive.inspect():
+                    for line in parent_repository.inspect():
                         if line.startswith('file-metadata'):
                             parts = line.split()
                             # Extract path from line: file-metadata path_hash:{hash} seq:{seq} {path} ...
@@ -257,11 +257,11 @@ class ImportTest(unittest.TestCase):
     def test_import_with_hash_collision(self):
         """Test that hash collisions are properly handled during import."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create parent archive
-            parent_path = Path(tmpdir) / 'parent_archive'
+            # Create parent repository
+            parent_path = Path(tmpdir) / 'parent_repository'
             parent_path.mkdir()
 
-            # Create nested archive
+            # Create nested repository
             nested_path = parent_path / 'nested'
             nested_path.mkdir()
 
@@ -276,25 +276,25 @@ class ImportTest(unittest.TestCase):
             (nested_path / 'nested_file2.txt').write_bytes(b'\0\0\0\2\0\0\0\2')  # Same as nested_file1
 
             with Processor() as processor:
-                # Build parent archive with XOR hash
-                with Archive(processor, str(parent_path), create=True) as parent_archive:
-                    parent_archive._hash_algorithms['xor'] = (4, compute_xor)
-                    parent_archive._default_hash_algorithm = 'xor'
-                    parent_archive.rebuild()
+                # Build parent repository with XOR hash
+                with Repository(processor, str(parent_path), create=True) as parent_repository:
+                    parent_repository._hash_algorithms['xor'] = (4, compute_xor)
+                    parent_repository._default_hash_algorithm = 'xor'
+                    parent_repository.rebuild()
 
-                # Build nested archive with XOR hash
-                with Archive(processor, str(nested_path), create=True) as nested_archive:
-                    nested_archive._hash_algorithms['xor'] = (4, compute_xor)
-                    nested_archive._default_hash_algorithm = 'xor'
-                    nested_archive.rebuild()
+                # Build nested repository with XOR hash
+                with Repository(processor, str(nested_path), create=True) as nested_repository:
+                    nested_repository._hash_algorithms['xor'] = (4, compute_xor)
+                    nested_repository._default_hash_algorithm = 'xor'
+                    nested_repository.rebuild()
 
                 # Import nested into parent
-                with Archive(processor, str(parent_path), create=False) as parent_archive:
-                    parent_archive.import_index(str(nested_path))
+                with Repository(processor, str(parent_path), create=False) as parent_repository:
+                    parent_repository.import_index(str(nested_path))
 
                     # Check that all files are present with correct EC assignments
                     indexed_files = {}  # path -> (digest, ec_id)
-                    for line in parent_archive.inspect():
+                    for line in parent_repository.inspect():
                         if line.startswith('file-metadata'):
                             parts = line.split()
                             # Extract path from line: file-metadata path_hash:{hash} seq:{seq} {path} ...
@@ -330,16 +330,16 @@ class ImportTest(unittest.TestCase):
     def test_import_rejects_path_through_unfollowed_symlink(self):
         """Test that importing through an unfollowed symlink is rejected."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create parent archive
-            parent_path = Path(tmpdir) / 'parent_archive'
+            # Create parent repository
+            parent_path = Path(tmpdir) / 'parent_repository'
             parent_path.mkdir()
 
             # Create a real directory
             real_dir = parent_path / 'real_dir'
             real_dir.mkdir()
 
-            # Create nested archive inside the real directory
-            nested_path = real_dir / 'nested_archive'
+            # Create nested repository inside the real directory
+            nested_path = real_dir / 'nested_repository'
             nested_path.mkdir()
             (nested_path / 'file.txt').write_text('content')
 
@@ -347,34 +347,34 @@ class ImportTest(unittest.TestCase):
             symlink_path = parent_path / 'symlink_dir'
             symlink_path.symlink_to(real_dir)
 
-            # Build the nested archive
+            # Build the nested repository
             with Processor() as processor:
-                with Archive(processor, str(nested_path), create=True) as nested_archive:
-                    nested_archive.rebuild()
+                with Repository(processor, str(nested_path), create=True) as nested_repository:
+                    nested_repository.rebuild()
 
                 # Try to import using the symlink path - should fail
-                # The import path goes through: parent_path -> symlink_dir -> nested_archive
-                with Archive(processor, str(parent_path), create=True) as parent_archive:
-                    # Use symlink path to reference the nested archive
-                    symlink_nested_path = symlink_path / 'nested_archive'
+                # The import path goes through: parent_path -> symlink_dir -> nested_repository
+                with Repository(processor, str(parent_path), create=True) as parent_repository:
+                    # Use symlink path to reference the nested repository
+                    symlink_nested_path = symlink_path / 'nested_repository'
                     with self.assertRaises(ValueError) as context:
-                        parent_archive.import_index(str(symlink_nested_path))
+                        parent_repository.import_index(str(symlink_nested_path))
                     self.assertIn('symlink', str(context.exception).lower())
                     self.assertIn('not configured to be followed', str(context.exception))
 
     def test_import_accepts_path_through_followed_symlink(self):
         """Test that importing through a followed symlink is accepted."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create parent archive
-            parent_path = Path(tmpdir) / 'parent_archive'
+            # Create parent repository
+            parent_path = Path(tmpdir) / 'parent_repository'
             parent_path.mkdir()
 
             # Create a real directory
             real_dir = parent_path / 'real_dir'
             real_dir.mkdir()
 
-            # Create nested archive inside the real directory
-            nested_path = real_dir / 'nested_archive'
+            # Create nested repository inside the real directory
+            nested_path = real_dir / 'nested_repository'
             nested_path.mkdir()
             (nested_path / 'file.txt').write_text('content')
 
@@ -382,41 +382,41 @@ class ImportTest(unittest.TestCase):
             symlink_path = parent_path / 'symlink_dir'
             symlink_path.symlink_to(real_dir)
 
-            # Configure parent archive to follow the symlink
-            aridx_path = parent_path / '.aridx'
+            # Configure parent repository to follow the symlink
+            aridx_path = parent_path / '.rededup'
             aridx_path.mkdir()
             settings_path = aridx_path / 'settings.toml'
             settings_path.write_text('followed_symlinks = ["symlink_dir"]\n')
 
-            # Build the nested archive
+            # Build the nested repository
             with Processor() as processor:
-                with Archive(processor, str(nested_path), create=True) as nested_archive:
-                    nested_archive.rebuild()
+                with Repository(processor, str(nested_path), create=True) as nested_repository:
+                    nested_repository.rebuild()
 
                 # Import using the symlink path - should succeed
-                with Archive(processor, str(parent_path), create=False) as parent_archive:
-                    symlink_nested_path = symlink_path / 'nested_archive'
-                    parent_archive.import_index(str(symlink_nested_path))
+                with Repository(processor, str(parent_path), create=False) as parent_repository:
+                    symlink_nested_path = symlink_path / 'nested_repository'
+                    parent_repository.import_index(str(symlink_nested_path))
 
                     # Verify the file was imported
                     indexed_files = []
-                    for line in parent_archive.inspect():
+                    for line in parent_repository.inspect():
                         if line.startswith('file-metadata'):
                             parts = line.split()
                             # Extract path from line: file-metadata path_hash:{hash} seq:{seq} {path} ...
                             path = urllib.parse.unquote_plus(parts[3])
                             indexed_files.append(path)
 
-                    self.assertIn('symlink_dir/nested_archive/file.txt', indexed_files)
+                    self.assertIn('symlink_dir/nested_repository/file.txt', indexed_files)
 
     def test_import_rejects_nested_path_through_unfollowed_symlink(self):
         """Test that importing rejects paths with symlinks deep in the hierarchy."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create parent archive
-            parent_path = Path(tmpdir) / 'parent_archive'
+            # Create parent repository
+            parent_path = Path(tmpdir) / 'parent_repository'
             parent_path.mkdir()
 
-            # Create directory structure: dir1/symlink_dir/dir2/nested_archive
+            # Create directory structure: dir1/symlink_dir/dir2/nested_repository
             dir1 = parent_path / 'dir1'
             dir1.mkdir()
 
@@ -426,8 +426,8 @@ class ImportTest(unittest.TestCase):
             dir2 = real_target / 'dir2'
             dir2.mkdir()
 
-            # Create nested archive
-            nested_path = dir2 / 'nested_archive'
+            # Create nested repository
+            nested_path = dir2 / 'nested_repository'
             nested_path.mkdir()
             (nested_path / 'file.txt').write_text('content')
 
@@ -435,23 +435,23 @@ class ImportTest(unittest.TestCase):
             symlink_path = dir1 / 'symlink_dir'
             symlink_path.symlink_to(real_target)
 
-            # Build the nested archive
+            # Build the nested repository
             with Processor() as processor:
-                with Archive(processor, str(nested_path), create=True) as nested_archive:
-                    nested_archive.rebuild()
+                with Repository(processor, str(nested_path), create=True) as nested_repository:
+                    nested_repository.rebuild()
 
                 # Try to import - should fail because path goes through unfollowed symlink
-                with Archive(processor, str(parent_path), create=True) as parent_archive:
-                    symlink_nested_path = dir1 / 'symlink_dir' / 'dir2' / 'nested_archive'
+                with Repository(processor, str(parent_path), create=True) as parent_repository:
+                    symlink_nested_path = dir1 / 'symlink_dir' / 'dir2' / 'nested_repository'
                     with self.assertRaises(ValueError) as context:
-                        parent_archive.import_index(str(symlink_nested_path))
+                        parent_repository.import_index(str(symlink_nested_path))
                     self.assertIn('symlink', str(context.exception).lower())
                     self.assertIn('dir1/symlink_dir', str(context.exception))
 
     def test_import_ancestor_validates_symlinks_in_containing_path(self):
-        """Test that importing from ancestor validates symlinks in the contained archive's path."""
+        """Test that importing from ancestor validates symlinks in the contained repository's path."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create ancestor archive
+            # Create ancestor repository
             ancestor_path = Path(tmpdir) / 'ancestor'
             ancestor_path.mkdir()
 
@@ -463,7 +463,7 @@ class ImportTest(unittest.TestCase):
             symlink = ancestor_path / 'symlink_subdir'
             symlink.symlink_to(real_dir)
 
-            # Create contained archive through symlink path
+            # Create contained repository through symlink path
             # Physical path: ancestor/real_subdir/contained
             # Symlink path: ancestor/symlink_subdir/contained
             contained_path = real_dir / 'contained'
@@ -471,16 +471,16 @@ class ImportTest(unittest.TestCase):
             (ancestor_path / 'file.txt').write_text('ancestor file')
             (contained_path / 'contained_file.txt').write_text('contained file')
 
-            # Build ancestor archive
+            # Build ancestor repository
             with Processor() as processor:
-                with Archive(processor, str(ancestor_path), create=True) as ancestor_archive:
-                    ancestor_archive.rebuild()
+                with Repository(processor, str(ancestor_path), create=True) as ancestor_repository:
+                    ancestor_repository.rebuild()
 
-                # Try to import into contained archive using symlink path
-                # The contained archive is at ancestor/symlink_subdir/contained
+                # Try to import into contained repository using symlink path
+                # The contained repository is at ancestor/symlink_subdir/contained
                 # When validating, it needs to check if symlink_subdir is followed
                 symlink_contained_path = symlink / 'contained'
-                with Archive(processor, str(symlink_contained_path), create=True) as contained_archive:
+                with Repository(processor, str(symlink_contained_path), create=True) as contained_repository:
                     with self.assertRaises(ValueError) as context:
-                        contained_archive.import_index(str(ancestor_path))
+                        contained_repository.import_index(str(ancestor_path))
                     self.assertIn('symlink', str(context.exception).lower())

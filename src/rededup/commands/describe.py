@@ -38,7 +38,7 @@ class DescribeOptions:
         sort_by: Sorting criterion for duplicates - 'size', 'items', 'identical', or 'path'
         sort_children: Sorting criterion for directory children - 'dup-size', 'dup-items', 'total-size', or 'name'
         use_bytes: If True, show sizes in bytes instead of human-readable format
-        show_details: If True, show report metadata (Report, Analyzed, Archive, Timestamp)
+        show_details: If True, show report metadata (Report, Analyzed, Repository, Timestamp)
         directory_only: If True, describe only the directory itself, not its contents
         keep_input_order: If True, keep input order of multiple paths instead of sorting
     """
@@ -75,7 +75,7 @@ def do_describe(paths: list[Path], options: DescribeOptions | None = None) -> No
                 print(f"Error: Path does not exist: {path}")
             else:
                 print(f"No analysis report found for: {path}")
-                print(f"Run 'arindexer analyze {path}' to generate a report.")
+                print(f"Run 'rededup analyze {path}' to generate a report.")
             return
 
         path_analyzed, path_record = result
@@ -239,10 +239,10 @@ class DescribeFormatter(ABC):
         self._print_details(record)
 
     def _print_report_metadata(self) -> None:
-        """Print report metadata including path and archive information."""
+        """Print report metadata including path and repository information."""
         print(f"Report: {self.store.report_dir}")
         print(f"Analyzed: {self.store.analyzed_path}")
-        print(f"Archive: {self.manifest.archive_path}")
+        print(f"Repository: {self.manifest.repository_path}")
         print(f"Timestamp: {self.manifest.timestamp}")
 
     def _build_row_data(self, name: str, is_dir: bool, record: DuplicateRecord | None) -> SortableRowData:
@@ -433,28 +433,28 @@ class DescribeFormatter(ABC):
         print()
         print("Summary Counts (in report header):")
         print("  Size: Total size and breakdown")
-        print("    - duplicated: Each item counted once if it has ANY duplicate in archive")
-        print("    - unique: Content with no duplicates in archive")
+        print("    - duplicated: Each item counted once if it has ANY duplicate in repository")
+        print("    - unique: Content with no duplicates in repository")
         print("  Items: Total item count and breakdown (files + special items, not directories)")
-        print("    - duplicated: Each item counted once if it has ANY duplicate in archive")
-        print("    - unique: Items with no duplicates in archive")
+        print("    - duplicated: Each item counted once if it has ANY duplicate in repository")
+        print("    - unique: Items with no duplicates in repository")
         print()
-        print("Duplicate Match Details (per archive location):")
-        print("  Status: Match type for this archive location")
+        print("Duplicate Match Details (per repository location):")
+        print("  Status: Match type for this repository location")
         print("    - Identical: All content present with matching metadata")
-        print("    - Superset: All analyzed content present (archive may have extras)")
+        print("    - Superset: All analyzed content present (repository may have extras)")
         print("    - Partial: Some analyzed content missing in this location")
         print("  Matching: Which metadata fields match (mtime, atime, ctime, mode, owner, group)")
-        print("  Duplicated items/size: Content in this archive location that matches")
+        print("  Duplicated items/size: Content in this repository location that matches")
         print()
         print("Hierarchical Matching Requirement (for directory duplicates):")
         print("  Files at the SAME relative paths within the directory are counted")
-        print("  - Example: Analyzed [a.txt, b.txt] vs. archive 'dir1/' [a.txt, c.txt]")
+        print("  - Example: Analyzed [a.txt, b.txt] vs. repository 'dir1/' [a.txt, c.txt]")
         print("    - Header totals: a.txt and b.txt both show as duplicated")
         print("    - 'dir1/' entry: Only a.txt counted (b.txt not at same path in dir1/)")
         print()
         print("Report Inclusion:")
-        print("  Included: Item has at least one duplicate in the archive")
+        print("  Included: Item has at least one duplicate in the repository")
         print("  Excluded: Item has NO duplicates (In Report column shows 'No')")
         print()
         print("Directory Listing Columns:")

@@ -5,7 +5,7 @@ from typing import NamedTuple, Callable, Awaitable
 from ..utils.async_keyed_lock import AsyncKeyedLock
 from ..utils.walker import FileContext
 from ..utils.throttler import Throttler
-from ..store.archive_store import ArchiveStore, FileSignature
+from ..index.store import IndexStore, FileSignature
 from ..utils.processor import Processor
 
 
@@ -16,20 +16,20 @@ class RebuildRefreshArgs(NamedTuple):
     hash_algorithm: tuple[int, Callable[[Path], Awaitable[bytes]]]
 
 
-async def do_rebuild(store: ArchiveStore, args: RebuildRefreshArgs, hash_algorithm_name: str):
+async def do_rebuild(store: IndexStore, args: RebuildRefreshArgs, hash_algorithm_name: str):
     """Async implementation of rebuild operation."""
     store.truncate()
     await do_refresh(store, args)
-    store.write_manifest(ArchiveStore.MANIFEST_HASH_ALGORITHM, hash_algorithm_name)
+    store.write_manifest(IndexStore.MANIFEST_HASH_ALGORITHM, hash_algorithm_name)
 
 
 class RefreshProcessor:
     """Processor for refresh operations that encapsulates state and logic."""
 
-    def __init__(self, store: ArchiveStore, args: RebuildRefreshArgs):
+    def __init__(self, store: IndexStore, args: RebuildRefreshArgs):
         self._store = store
         self._processor = args.processor
-        self._archive_path = store.archive_path
+        self._repository_path = store.repository_path
         _, self._calculate_digest = args.hash_algorithm
         self._keyed_lock = AsyncKeyedLock()
 
@@ -41,12 +41,12 @@ class RefreshProcessor:
             for file_path, signature in self._store.list_registered_files():
                 await throttler.schedule(self._refresh_entry(file_path, signature))
 
-            for file_path, context in self._store.walk_archive():
+            for file_path, context in self._store.walk_repository():
                 if context.is_file():
                     await throttler.schedule(self._handle_file(file_path, context))
 
     async def _handle_file(self, file_path: Path, file_context: FileContext):
-        """Handle a file found during archive walk."""
+        """Handle a file found during repository walk."""
         relative_path = file_context.relative_path
         assert relative_path is not None, "File context must have a relative path"
         # Generate signature only for new files. Existing files are handled in _refresh_entry().
@@ -57,7 +57,7 @@ class RefreshProcessor:
 
     async def _refresh_entry(self, relative_path: Path, entry_signature: FileSignature):
         """Refresh an existing index entry."""
-        file_path = (self._archive_path / relative_path)
+        file_path = (self._repository_path / relative_path)
 
         try:
             stat = file_path.stat()
@@ -74,7 +74,7 @@ class RefreshProcessor:
         self._store.register_file(relative_path, FileSignature(relative_path, entry_signature.digest, entry_signature.mtime_ns, None))
 
         # Acquire async-level lock for this digest to coordinate concurrent async tasks.
-        # While ArchiveStore methods are thread-safe, this lock prevents async task-level
+        # While IndexStore methods are thread-safe, this lock prevents async task-level
         # races (e.g., EC removal happening concurrently with EC assignment in _generate_signature).
         async with self._keyed_lock.lock(entry_signature.digest):
             if entry_signature.ec_id is not None:
@@ -97,7 +97,7 @@ class RefreshProcessor:
                 if next_ec_id <= ec_id:
                     next_ec_id = ec_id + 1
 
-                if await self._processor.compare_content(file_path, self._archive_path / paths[0]):
+                if await self._processor.compare_content(file_path, self._repository_path / paths[0]):
                     break
             else:
                 ec_id = next_ec_id
@@ -107,9 +107,9 @@ class RefreshProcessor:
             self._store.register_file(relative_path, FileSignature(relative_path, digest, mtime, ec_id))
 
 
-async def do_refresh(store: ArchiveStore, args: RebuildRefreshArgs):
+async def do_refresh(store: IndexStore, args: RebuildRefreshArgs):
     """Async implementation of refresh operation with optional hash algorithm override."""
-    # Ensure archive ID exists (generate if needed, before refresh)
-    store.ensure_archive_id()
+    # Ensure repository ID exists (generate if needed, before refresh)
+    store.ensure_repository_id()
     processor = RefreshProcessor(store, args)
     await processor.run()

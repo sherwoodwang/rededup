@@ -6,53 +6,53 @@ import textwrap
 from functools import wraps
 from pathlib import Path
 
-from . import Archive, Processor, ArchiveIndexNotFound
+from . import Repository, Processor, IndexNotFound
 from .utils.profiling import profile_main
 
 
-def needs_archive(func):
-    """Decorator for commands that need the archive to be loaded.
+def needs_repository(func):
+    """Decorator for commands that need the repository to be loaded.
 
-    The decorated function will receive (archive, output, args).
-    The wrapper function takes (load_archive_fn, output, args) and creates Processor and calls load_archive_fn.
+    The decorated function will receive (repository, output, args).
+    The wrapper function takes (load_repository_fn, output, args) and creates Processor and calls load_repository_fn.
     """
     @wraps(func)
-    def wrapper(load_archive_fn, output, args):
+    def wrapper(load_repository_fn, output, args):
         with Processor() as processor:
-            with load_archive_fn(processor) as archive:
-                return func(archive, output, args)
+            with load_repository_fn(processor) as repository:
+                return func(repository, output, args)
     return wrapper
 
 
-def no_archive(func):
-    """Decorator for commands that don't need the archive.
+def no_repository(func):
+    """Decorator for commands that don't need the repository.
 
     The decorated function will receive (output, args).
-    The wrapper function takes (load_archive_fn, output, args) but doesn't call load_archive_fn or create Processor.
+    The wrapper function takes (load_repository_fn, output, args) but doesn't call load_repository_fn or create Processor.
     """
     @wraps(func)
-    def wrapper(load_archive_fn, output, args):
+    def wrapper(load_repository_fn, output, args):
         return func(output, args)
     return wrapper
 
 
 @profile_main
-def archive_indexer():
+def rededup_main():
     parser = argparse.ArgumentParser(
-        prog='arindexer',
+        prog='rededup',
         description='Create an index for a collection of files with hash functions and deduplicate files against the '
                     'indexed collection.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent('''
             Examples:
-              arindexer rebuild
-              arindexer analyze /path/to/check
+              rededup rebuild
+              rededup analyze /path/to/check
             ''').strip()
     )
     parser.add_argument(
-        '--archive',
+        '--repository',
         metavar='PATH',
-        help='Path to the archive directory. If not provided, uses ARINDEXER_ARCHIVE environment variable or searches '
+        help='Path to the repository directory. If not provided, uses REDEDUP_REPOSITORY environment variable or searches '
              'from current directory upward.')
     parser.add_argument(
         '--verbose',
@@ -61,7 +61,7 @@ def archive_indexer():
     parser.add_argument(
         '--log-file',
         metavar='PATH',
-        help='Path to log file for operation logging. If not provided, uses logging.path from archive settings or no '
+        help='Path to log file for operation logging. If not provided, uses logging.path from repository settings or no '
              'logging.')
     parser.add_argument(
         '--log-level',
@@ -71,56 +71,56 @@ def archive_indexer():
     subparsers = parser.add_subparsers(
         dest='command',
         title='Commands',
-        description='Available commands for archive operations',
-        help='Use "arindexer COMMAND --help" for command-specific help'
+        description='Available commands for repository operations',
+        help='Use "rededup COMMAND --help" for command-specific help'
     )
 
     parser_rebuild = subparsers.add_parser(
         'rebuild',
-        help='Completely rebuild the archive index from scratch',
-        description='Rebuilds the entire archive index by scanning all files and computing their hashes. This '
+        help='Completely rebuild the repository index from scratch',
+        description='Rebuilds the entire repository index by scanning all files and computing their hashes. This '
                     'operation will overwrite any existing index.')
     parser_rebuild.set_defaults(method=_rebuild, create=True)
 
     parser_refresh = subparsers.add_parser(
         'refresh',
-        help='Refresh the archive index with any changes',
-        description='Updates the archive index by scanning for new, modified, or deleted files. More efficient than '
+        help='Refresh the repository index with any changes',
+        description='Updates the repository index by scanning for new, modified, or deleted files. More efficient than '
                     'rebuild for incremental updates.')
     parser_refresh.set_defaults(method=_refresh, create=True)
 
     parser_import = subparsers.add_parser(
         'import',
-        help='Import index entries from another archive',
-        description='Import index entries from another archive. If the source archive is a nested directory of the '
-                    'current archive, entries are imported with the relative path prepended as a prefix. If the '
-                    'source archive is an ancestor directory, only entries within the current archive\'s scope are '
+        help='Import index entries from another repository',
+        description='Import index entries from another repository. If the source repository is a nested directory of the '
+                    'current repository, entries are imported with the relative path prepended as a prefix. If the '
+                    'source repository is an ancestor directory, only entries within the current repository\'s scope are '
                     'imported with their prefix removed.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent('''
             Examples:
               # Import from nested directory
-              arindexer import /archive/subdir
+              rededup import /repository/subdir
 
               # Import from ancestor directory
-              cd /archive/subdir && arindexer import /archive
+              cd /repository/subdir && rededup import /repository
             ''').strip())
     parser_import.add_argument(
-        'source_archive',
+        'source_repository',
         metavar='SOURCE',
-        help='Path to the source archive directory to import from')
+        help='Path to the source repository directory to import from')
     parser_import.set_defaults(method=_import_index, create=False)
 
     parser_analyze = subparsers.add_parser(
         'analyze',
         help='Generate analysis reports for files or directories',
-        description='Analyzes the specified paths against the archive and generates persistent reports '
+        description='Analyzes the specified paths against the repository and generates persistent reports '
                     'in .report directories. Each report includes duplicate detection results.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent('''
             Examples:
-              arindexer analyze /home/user/documents
-              arindexer analyze /path/to/file1.txt /path/to/dir2
+              rededup analyze /home/user/documents
+              rededup analyze /path/to/file1.txt /path/to/dir2
 
             Each input path will get its own report directory:
               /home/user/documents.report/
@@ -131,7 +131,7 @@ def archive_indexer():
         'paths',
         nargs='+',
         metavar='PATH',
-        help='Files or directories to analyze against the archive')
+        help='Files or directories to analyze against the repository')
     parser_analyze.add_argument(
         '--include-atime',
         action='store_true',
@@ -159,15 +159,15 @@ def archive_indexer():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent('''
             Examples:
-              arindexer describe
-              arindexer describe /home/user/documents/file.txt
-              arindexer describe /home/user/documents
-              arindexer describe --directory /home/user/documents
-              arindexer describe /path/file1 /path/file2 /path/file3
-              arindexer describe --all /home/user/documents/file.txt
-              arindexer describe --limit 5 --sort-by path /home/user/documents
+              rededup describe
+              rededup describe /home/user/documents/file.txt
+              rededup describe /home/user/documents
+              rededup describe --directory /home/user/documents
+              rededup describe /path/file1 /path/file2 /path/file3
+              rededup describe --all /home/user/documents/file.txt
+              rededup describe --limit 5 --sort-by path /home/user/documents
 
-            Single path: Shows list of duplicates found in the archive.
+            Single path: Shows list of duplicates found in the repository.
             Directory with --directory: Shows only directory info (no contents table).
             Multiple paths: Shows all paths in a table (no duplicates details).
             ''').strip())
@@ -213,32 +213,32 @@ def archive_indexer():
     parser_describe.add_argument(
         '--details',
         action='store_true',
-        help='Show detailed metadata including Report, Analyzed, Archive, Timestamp, Directory/File type, and '
+        help='Show detailed metadata including Report, Analyzed, Repository, Timestamp, Directory/File type, and '
              'Duplicates count')
     parser_describe.set_defaults(method=_describe, create=False)
 
     parser_diff_tree = subparsers.add_parser(
         'diff-tree',
-        help='Compare directory trees between analyzed path and archive duplicate',
+        help='Compare directory trees between analyzed path and repository duplicate',
         description='Displays a file tree comparison between an analyzed directory and one of its '
-                    'duplicates in the archive. Shows which files exist in both, only in analyzed, '
-                    'or only in archive.',
+                    'duplicates in the repository. Shows which files exist in both, only in analyzed, '
+                    'or only in repository.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent('''
             Examples:
-              arindexer diff-tree /path/to/analyzed/dir /archive/path/to/duplicate
+              rededup diff-tree /path/to/analyzed/dir /repository/path/to/duplicate
 
             The analyzed path must have an existing analysis report.
-            The archive path must be a known duplicate of the analyzed path.
+            The repository path must be a known duplicate of the analyzed path.
             ''').strip())
     parser_diff_tree.add_argument(
         'analyzed_path',
         metavar='ANALYZED_PATH',
         help='Path to the analyzed directory (must have an existing report)')
     parser_diff_tree.add_argument(
-        'archive_path',
-        metavar='ARCHIVE_PATH',
-        help='Path to the duplicate directory in the archive')
+        'repository_path',
+        metavar='REPOSITORY_PATH',
+        help='Path to the duplicate directory in the repository')
     parser_diff_tree.add_argument(
         '--hide-content-match',
         action='store_true',
@@ -255,15 +255,15 @@ def archive_indexer():
         help='Show unlimited depth (overrides --max-depth)')
     parser_diff_tree.add_argument(
         '--show',
-        choices=['both', 'analyzed', 'archive'],
+        choices=['both', 'analyzed', 'repository'],
         default='both',
-        help='Filter which files to show: both (default), analyzed (files in analyzed dir), or archive (files in archive dir)')
+        help='Filter which files to show: both (default), analyzed (files in analyzed dir), or repository (files in repository dir)')
     parser_diff_tree.set_defaults(method=_diff_tree, create=False)
 
     parser_inspect = subparsers.add_parser(
         'inspect',
-        help='Inspect and display archive records',
-        description='Displays information about the files and records stored in the archive index.')
+        help='Inspect and display repository records',
+        description='Displays information about the files and records stored in the repository index.')
     parser_inspect.set_defaults(method=_inspect, create=False)
 
     args = parser.parse_args()
@@ -281,23 +281,23 @@ def archive_indexer():
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
 
-    archive_path = args.archive
-    if archive_path is None:
-        archive_path = os.environ.get('ARINDEXER_ARCHIVE')
+    repository_path = args.repository
+    if repository_path is None:
+        repository_path = os.environ.get('REDEDUP_REPOSITORY')
 
-    def load_archive(processor):
-        if archive_path is None:
+    def load_repository(processor):
+        if repository_path is None:
             working_directory = os.getcwd()
             first_exception = None
             attempt = Path(working_directory)
             while True:
                 try:
-                    archive = Archive(processor, attempt)
+                    repository = Repository(processor, attempt)
                     break
-                except ArchiveIndexNotFound as e:
+                except IndexNotFound as e:
                     if attempt == attempt.parent:
                         if args.create:
-                            archive = Archive(processor, working_directory, create=True)
+                            repository = Repository(processor, working_directory, create=True)
                             break
                         else:
                             if first_exception is not None:
@@ -309,30 +309,30 @@ def archive_indexer():
                     if first_exception is None:
                         first_exception = e
         else:
-            archive = Archive(processor, archive_path)
+            repository = Repository(processor, repository_path)
 
         if not (hasattr(args, 'log_file') and args.log_file):
-            archive.configure_logging_from_settings()
-        return archive
+            repository.configure_logging_from_settings()
+        return repository
 
-    # Call the method with load_archive function
-    # The @needs_archive decorator will create Processor and load the archive
-    # The @no_archive decorator will skip both Processor and archive loading
-    args.method(load_archive, None, args)
-
-
-@needs_archive
-def _rebuild(archive: Archive, output, args):
-    archive.rebuild()
+    # Call the method with load_repository function
+    # The @needs_repository decorator will create Processor and load the repository
+    # The @no_repository decorator will skip both Processor and repository loading
+    args.method(load_repository, None, args)
 
 
-@needs_archive
-def _refresh(archive: Archive, output, args):
-    archive.refresh()
+@needs_repository
+def _rebuild(repository: Repository, output, args):
+    repository.rebuild()
 
 
-@needs_archive
-def _analyze(archive: Archive, output, args):
+@needs_repository
+def _refresh(repository: Repository, output, args):
+    repository.refresh()
+
+
+@needs_repository
+def _analyze(repository: Repository, output, args):
     from .report.duplicate_match import DuplicateMatchRule
 
     paths = [Path(p) for p in args.paths]
@@ -347,10 +347,10 @@ def _analyze(archive: Archive, output, args):
         include_group=not args.exclude_group  # Default: True
     )
 
-    archive.analyze(paths, comparison_rule)
+    repository.analyze(paths, comparison_rule)
 
 
-@no_archive
+@no_repository
 def _describe(output, args):
     from .commands.describe import do_describe, DescribeOptions
 
@@ -396,35 +396,35 @@ def _describe(output, args):
     do_describe(paths, options)
 
 
-@no_archive
+@no_repository
 def _diff_tree(output, args):
     from .commands.diff_tree import do_diff_tree
 
     analyzed_path = Path(args.analyzed_path)
-    archive_path = Path(args.archive_path)
+    repository_path = Path(args.repository_path)
 
     # Handle unlimited flag
     max_depth = None if args.unlimited else args.max_depth
 
     do_diff_tree(
         analyzed_path,
-        archive_path,
+        repository_path,
         hide_content_match=args.hide_content_match,
         max_depth=max_depth,
         show_filter=args.show
     )
 
 
-@needs_archive
-def _inspect(archive: Archive, output, args):
-    for record in archive.inspect():
+@needs_repository
+def _inspect(repository: Repository, output, args):
+    for record in repository.inspect():
         print(record)
 
 
-@needs_archive
-def _import_index(archive: Archive, output, args):
-    archive.import_index(args.source_archive)
+@needs_repository
+def _import_index(repository: Repository, output, args):
+    repository.import_index(args.source_repository)
 
 
 if __name__ == '__main__':
-    archive_indexer()
+    rededup_main()
