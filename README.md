@@ -7,10 +7,13 @@ against the indexed one.
 
 ### Global Options
 
-- `--repository REPOSITORY_PATH`: Specify the path to the repository directory. If not provided, the tool will use the
+- `--repository PATH`: Specify the path to the repository directory. If not provided, the tool will use the
   `REDEDUP_REPOSITORY` environment variable or search for a repository starting from the current directory and moving up
   the directory tree.
-- `--verbose`: Enable verbose output for more detailed information during operations.
+- `--verbose`: Enable verbose output for detailed information during operations.
+- `--log-file PATH`: Path to log file for operation logging. If not provided, uses `logging.path` from repository settings
+  or no logging.
+- `--log-level LEVEL`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL). Defaults to INFO when `--log-file` is provided.
 
 ### Commands
 
@@ -32,19 +35,87 @@ rededup refresh
 rededup --repository /path/to/repository refresh
 ```
 
-#### `find-duplicates [FILES_OR_DIRECTORIES...]`
+#### `import SOURCE`
 
-Finds duplicate files in the specified files or directories against the repository.
-
-**Options:**
-- `--ignore TYPES` - Comma-separated list of metadata difference types to ignore when comparing files
-- `--show-possible-duplicates` - Show content-wise duplicates that might be actual duplicates
+Imports index entries from another repository. If the source repository is a nested directory of the current repository,
+entries are imported with the relative path prepended as a prefix. If the source repository is an ancestor directory,
+only entries within the current repository's scope are imported with their prefix removed.
 
 ```bash
-rededup find-duplicates /path/to/check
-rededup find-duplicates --ignore size,mtime /path/to/check
-rededup find-duplicates --show-possible-duplicates /path/to/check
+# Import from nested directory
+rededup import /repository/subdir
+
+# Import from ancestor directory
+cd /repository/subdir && rededup import /repository
 ```
+
+#### `analyze PATH [PATH ...]`
+
+Analyzes the specified paths against the repository and generates persistent reports in `.report` directories.
+Each report includes duplicate detection results.
+
+**Options:**
+- `--include-atime` - Include access time (atime) when determining if files are identical (default: excluded)
+- `--include-ctime` - Include change time (ctime) when determining if files are identical (default: excluded)
+- `--exclude-owner` - Exclude file owner (UID) when determining if files are identical (default: included)
+- `--exclude-group` - Exclude file group (GID) when determining if files are identical (default: included)
+
+```bash
+rededup analyze /home/user/documents
+rededup analyze /path/to/file1.txt /path/to/dir2
+```
+
+Each input path will get its own report directory:
+- `/home/user/documents.report/`
+- `/path/to/file1.txt.report/`
+- `/path/to/dir2.report/`
+
+#### `describe [PATH ...]`
+
+Displays duplicate information for files or directories from existing `.report` directories. Searches upward from the
+specified path to find relevant reports. If no path is provided, describes the current working directory.
+
+**Options:**
+- `--directory` - Describe only the path itself, not its contents (for directories only)
+- `--all` - Show all duplicates (default: show only the most relevant)
+- `--limit N` - Maximum number of duplicates to show (default: 1 if not `--all`)
+- `--sort-by {size,items,identical,path}` - Sort duplicates by: size (duplicated_size, default), items (duplicated_items), identical (identity status), or path (path length)
+- `--sort-children {dup-size,dup-items,total-size,name}` - Sort directory children by: dup-size (duplicated size descending, default), dup-items (duplicated items descending), total-size (total size descending), or name (alphabetically)
+- `--keep-input-order` - Keep the input order of paths when multiple paths are provided (default: sort by same criteria as directory children)
+- `--bytes` - Show sizes in bytes instead of human-readable format (e.g., 1048576 instead of 1.00 MB)
+- `--details` - Show detailed metadata including Report, Analyzed, Repository, Timestamp, Directory/File type, and Duplicates count
+
+```bash
+rededup describe
+rededup describe /home/user/documents/file.txt
+rededup describe /home/user/documents
+rededup describe --directory /home/user/documents
+rededup describe /path/file1 /path/file2 /path/file3
+rededup describe --all /home/user/documents/file.txt
+rededup describe --limit 5 --sort-by path /home/user/documents
+```
+
+**Output behavior:**
+- Single path: Shows list of duplicates found in the repository
+- Directory with `--directory`: Shows only directory info (no contents table)
+- Multiple paths: Shows all paths in a table (no duplicates details)
+
+#### `diff-tree ANALYZED_PATH REPOSITORY_PATH`
+
+Displays a file tree comparison between an analyzed directory and one of its duplicates in the repository.
+Shows which files exist in both, only in analyzed, or only in repository.
+
+**Options:**
+- `--hide-content-match` - Hide files that match content but differ in metadata (only show structural differences)
+- `--max-depth N` - Maximum depth to display (default: 3, show "..." for deeper levels)
+- `--unlimited` - Show unlimited depth (overrides `--max-depth`)
+- `--show {both,analyzed,repository}` - Filter which files to show: both (default), analyzed (files in analyzed dir), or repository (files in repository dir)
+
+```bash
+rededup diff-tree /path/to/analyzed/dir /repository/path/to/duplicate
+```
+
+The analyzed path must have an existing analysis report. The repository path must be a known duplicate of the analyzed path.
 
 #### `inspect`
 
@@ -67,14 +138,20 @@ rededup inspect
 # Create or rebuild a repository index in the current directory
 rededup rebuild
 
-# Find duplicates in a specific directory
-rededup find-duplicates /home/user/documents
+# Analyze a directory for duplicates
+rededup analyze /home/user/documents
 
-# Find duplicates ignoring file modification time differences
-rededup find-duplicates --ignore mtime /home/user/documents
+# Describe duplicates found for a specific file
+rededup describe /home/user/documents/file.txt
+
+# Show all duplicates for a directory
+rededup describe --all /home/user/documents
+
+# Compare directory trees between analyzed path and repository duplicate
+rededup diff-tree /home/user/documents /mnt/backup/documents
 
 # Use a specific repository location
-rededup --repository /mnt/backup/repository find-duplicates /home/user/documents
+rededup --repository /mnt/backup/repository analyze /home/user/documents
 ```
 
 ## Index Format
